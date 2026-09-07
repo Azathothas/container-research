@@ -1,0 +1,11 @@
+bubblewrap 0.8.0
+## unconfined
+bwrap-ok
+## model (clone allowed, mount denied)
+bwrap: Failed to make / slave: Operation not permitted
+## clone(CLONE_NEW*) additionally denied
+bwrap: Creating new namespace failed: Operation not permitted
+## userns only, no filter
+bwrap-ok
+## model, with runimages --unshare-user-try
+bwrap: Failed to make / slave: Operation not permitted

@@ -1,0 +1,22 @@
+./run.sh: line 182: cd: /home/user/container-research/verification/build/lilipod-src: No such file or directory
+## pull, unconfined
+ff727edbcbe60df2bd6a89cf65d6db2b
+## model
+proc_utils.go:24 [1;32m[debug] [0;0mensuring we're either root or fake-root
+proc_utils.go:74 [1;32m[debug] [0;0mexecuting [/home/user/container-research/verification/build/lilipod-stock --log-level debug run --rm alpine:latest /bin/echo hi]
+proc_utils.go:79 [1;32m[debug] [0;0merror: fork/exec /home/user/container-research/verification/build/lilipod-stock: operation not permitted
+## model+clone denied
+proc_utils.go:24 [1;32m[debug] [0;0mensuring we're either root or fake-root
+proc_utils.go:74 [1;32m[debug] [0;0mexecuting [/home/user/container-research/verification/build/lilipod-stock --log-level debug run --rm alpine:latest /bin/echo hi]
+proc_utils.go:79 [1;32m[debug] [0;0merror: fork/exec /home/user/container-research/verification/build/lilipod-stock: operation not permitted
+## userns only, no filter
+proc_utils.go:24 [1;32m[debug] [0;0mensuring we're either root or fake-root
+proc_utils.go:74 [1;32m[debug] [0;0mexecuting [/home/user/container-research/verification/build/lilipod-stock --log-level debug run --rm alpine:latest /bin/echo hi]
+proc_utils.go:79 [1;32m[debug] [0;0merror: fork/exec /home/user/container-research/verification/build/lilipod-stock: operation not permitted
+## model, ROOTFUL=true
+proc_utils.go:24 [1;32m[debug] [0;0mensuring we're either root or fake-root
+proc_utils.go:74 [1;32m[debug] [0;0mexecuting [/home/user/container-research/verification/build/lilipod-stock --log-level debug run --rm alpine:latest /bin/echo hi]
+proc_utils.go:79 [1;32m[debug] [0;0merror: fork/exec /home/user/container-research/verification/build/lilipod-stock: operation not permitted
+## first wall bypassed (UNSHARED=true): the next wall
+2026/09/07 02:06:23 exit status 2: tar: etc/shadow: Cannot change ownership to uid 0, gid 42: Invalid argument
+tar: Exiting with failure status due to previous errors

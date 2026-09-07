@@ -1,0 +1,9 @@
+## cchown under the shim
+shim: intercepted lchown("/tmp/shimtarget")
+c lchown() rc=0 
+## gochown-nocgo under the shim
+go os.Lchown -> <nil>
+## gochown-cgo under the shim
+go os.Lchown -> <nil>
+## go lchown(0,42) under the reconstructed runtime
+go os.Lchown -> lchown /tmp/shimtarget: invalid argument

@@ -1,0 +1,14 @@
+ii  libarchive-dev:amd64 3.6.2-1+deb12u5 amd64        Multi-format archive and compression library (development files)
+## 32 MB into an 8 MB filesystem
+ARCHIVE_OK=0 ARCHIVE_RETRY=-10 ARCHIVE_WARN=-20 ARCHIVE_FAILED=-25 ARCHIVE_FATAL=-30
+archive_write_header -> 0
+archive_write_data(33554432) -> -20
+dwarfs would now throw: archive_error: short write: -20 != 33554432
+archive_errno        -> 28
+archive_error_string -> Write failed
+## control: same write with room
+ARCHIVE_OK=0 ARCHIVE_RETRY=-10 ARCHIVE_WARN=-20 ARCHIVE_FAILED=-25 ARCHIVE_FATAL=-30
+archive_write_header -> 0
+archive_write_data(33554432) -> 33554432
+archive_errno        -> 0
+archive_error_string -> (none)

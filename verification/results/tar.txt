@@ -1,0 +1,11 @@
+tar (GNU tar) 1.35
+## userns only — no filter rule for chown anywhere
+/usr/bin/tar: etc/shadow: Cannot change ownership to uid 0, gid 42: Invalid argument
+/usr/bin/tar: etc: Cannot change ownership to uid 0, gid 42: Invalid argument
+/usr/bin/tar: Exiting with failure status due to previous errors
+rc=2
+## same, with --no-same-owner
+rc=0
+resulting ownership:
+total 4
+-rw-r--r-- 1 0 0 7 Sep  7 02:05 shadow

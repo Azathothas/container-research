@@ -1,0 +1,5 @@
+225641729 bytes = 215.1887216568 MiB = 225.641729 MB
+onelf's displayed 215.2 matches MiB (215.19), not MB (225.64)
+payload 213.6 + runtime ~1.6 = 215.2; 603.7/215.2 = 2.805
+full capability mask 0x1ffffffffff has 41 bits set (0..40)
+a 298 MB payload into a 64 MiB /tmp overshoots by 4.4x

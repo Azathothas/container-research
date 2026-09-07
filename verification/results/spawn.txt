@@ -1,0 +1,35 @@
+## unconfined
+no SysProcAttr                     OK
+SysProcAttr{} (no Credential)      OK
+Credential{0,0}                    OK
+Credential{0,0}+GidMapEnableSetgroups OK
+Credential{0,0,NoSetGroups:true}   OK
+Credential{0,0,NoSetGroups}+Pdeath OK
+GidMappings+!EnableSetgroups       OK
+Cloneflags=CLONE_NEWNS             OK
+Cloneflags=NEWUTS|NEWNS            OK
+Cloneflags=NEWNS + Credential{0,0} OK
+
+## userns only (setgroups denied by the namespace)
+no SysProcAttr                     OK
+SysProcAttr{} (no Credential)      OK
+Credential{0,0}                    FAIL errno=1 EPERM
+Credential{0,0}+GidMapEnableSetgroups FAIL errno=1 EPERM
+Credential{0,0,NoSetGroups:true}   OK
+Credential{0,0,NoSetGroups}+Pdeath OK
+GidMappings+!EnableSetgroups       OK
+Cloneflags=CLONE_NEWNS             OK
+Cloneflags=NEWUTS|NEWNS            OK
+Cloneflags=NEWNS + Credential{0,0} FAIL errno=1 EPERM
+
+## seccomp denies setgroups
+no SysProcAttr                     OK
+SysProcAttr{} (no Credential)      OK
+Credential{0,0}                    FAIL errno=1 EPERM
+Credential{0,0}+GidMapEnableSetgroups FAIL errno=1 EPERM
+Credential{0,0,NoSetGroups:true}   OK
+Credential{0,0,NoSetGroups}+Pdeath OK
+GidMappings+!EnableSetgroups       OK
+Cloneflags=CLONE_NEWNS             OK
+Cloneflags=NEWUTS|NEWNS            OK
+Cloneflags=NEWNS + Credential{0,0} FAIL errno=1 EPERM

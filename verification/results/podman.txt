@@ -1,0 +1,16 @@
+podman version 4.3.1
+## can any process become non-root?
+setpriv: setresuid failed: Invalid argument
+## info, default (overlay) storage driver
+Error: mount /var/lib/containers/storage/overlay:/var/lib/containers/storage/overlay, flags: 0x1000: operation not permitted
+## info, --storage-driver vfs and redirected paths
+OCIRuntime=crun driver=vfs
+## load a local image: peel the denials back one at a time
+   [CONFINE_USERNS=1 CONFINE_SECCOMP=1 ]
+creating mount namespace before pivot: operation not permitted exit status 1
+   [CONFINE_USERNS=1 CONFINE_SECCOMP=1 CONFINE_ALLOW_UNSHARE=1]
+remount /, flags: 0x44000: operation not permitted exit status 1
+   [CONFINE_USERNS=1 CONFINE_SECCOMP=1 CONFINE_ALLOW_UNSHARE=1 CONFINE_ALLOW_MOUNT=1]
+lchown /etc/shadow: invalid argument exit status 1
+   [userns only, no filter]
+lchown /etc/shadow: invalid argument exit status 1

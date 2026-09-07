@@ -1,0 +1,31 @@
+## go: the setgroups guard
+494-		if !(sys.GidMappings != nil && !sys.GidMappingsEnableSetgroups && ngroups == 0) && !cred.NoSetGroups {
+495:			_, _, err1 = RawSyscall(_SYS_setgroups, ngroups, groups, 0)
+## go: LookPath ignores PATH for a name containing a slash
+	if strings.Contains(file, "/") {
+		err := findExecutable(file)
+		if err == nil {
+			return file, nil
+		}
+		return "", &Error{file, err}
+	}
+## containers/bubblewrap
+3034:  clone_flags = SIGCHLD | CLONE_NEWNS;
+3098:            die ("Creating new namespace failed, likely because the kernel does not support user namespaces.");
+3104:        die ("Creating new namespace failed: nesting depth or /proc/sys/user/max_*_namespaces exceeded (ENOSPC)");
+3106:      die_with_error ("Creating new namespace failed");
+3258:    die_with_mount_error ("Failed to make / slave");
+## qaidvoid/onelf
+/home/user/container-research/verification/build/src-onelf/crates/onelf-format/src/lib.rs:20:    Manifest, ManifestHeader, StringTableBuilder, is_safe_component, symlink_target_within_root,
+/home/user/container-research/verification/build/src-onelf/crates/onelf-format/src/manifest.rs:19:pub fn symlink_target_within_root(link_rel: &std::path::Path, target: &str) -> bool {
+/home/user/container-research/verification/build/src-onelf/crates/onelf-format/src/manifest.rs:584:        assert!(symlink_target_within_root(
+/home/user/container-research/verification/build/src-onelf/crates/onelf-format/src/manifest.rs:588:        assert!(symlink_target_within_root(Path::new("a/b/c"), "d"));
+/home/user/container-research/verification/build/src-onelf/crates/onelf-format/src/manifest.rs:590:        assert!(!symlink_target_within_root(
+/home/user/container-research/verification/build/src-onelf/crates/onelf-format/src/manifest.rs:595:        assert!(!symlink_target_within_root(
+## 89luca89/lilipod
+/home/user/container-research/verification/build/src-lilipod/main.go:94:	if os.Getenv("ROOTFUL") == "" {
+/home/user/container-research/verification/build/src-lilipod/main.go:95:		err = os.Setenv("ROOTFUL", strconv.FormatBool(os.Getuid() == 0))
+/home/user/container-research/verification/build/src-lilipod/cmd/run.go:187:	if os.Getenv("ROOTFUL") == constants.TrueString && userns == constants.KeepID {
+/home/user/container-research/verification/build/src-lilipod/cmd/create.go:195:	if os.Getenv("ROOTFUL") == constants.TrueString && userns == constants.KeepID {
+/home/user/container-research/verification/build/src-lilipod/pkg/procutils/proc_utils.go:29:		(os.Getenv("ROOTFUL") != constants.TrueString ||
+/home/user/container-research/verification/build/src-lilipod/pkg/procutils/proc_utils.go:32:		logging.LogDebug(os.Getenv("ROOTFUL"))
