@@ -1,0 +1,19 @@
+### captured: 2026-09-07T03:08:54Z
+$ L=/workspace/lilipod/lilipod-v2; export LILIPOD_HOME=/workspace/lilipod-store-v2
+$L create --name poc1 --userns host -v /workspace/poc/src1:/src alpine:latest /bin/sh /src/build.sh >/dev/null 2>&1
+$L start poc1 2>&1 | grep -vE 'warn\]'; sleep 45
+$L logs poc1 2>&1 | grep -vE 'warn\]' | sed 's/^[0-9]*:[a-z]*://'
+$L rm poc1 >/dev/null 2>&1
+[rc=0]
+### captured: 2026-09-07T03:15:02Z
+$ L=/workspace/lilipod/lilipod-v2; export LILIPOD_HOME=/workspace/lilipod-store-v2
+$L create --name poc1 --userns host -v /workspace/poc/src1:/src alpine:latest /bin/sh /src/build.sh >/dev/null 2>&1
+$L start poc1 2>/dev/null; sleep 60
+$L logs poc1 2>&1 | grep -vE 'warn\]' | sed 's/^[0-9]*:[a-z]*://'
+ID=$($L inspect poc1 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+echo '=== artifact out of the store:'
+cp $LILIPOD_HOME/lilipod/containers/$ID/rootfs/out/hello /workspace/poc/hello-musl-static && ls -la /workspace/poc/hello-musl-static
+$L rm poc1 >/dev/null 2>&1
+=== artifact out of the store:
+-rwxr-xr-x 1 0 0 88168 Sep  7 03:16 /workspace/poc/hello-musl-static
+[rc=0]

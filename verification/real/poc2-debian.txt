@@ -1,0 +1,27 @@
+### captured: 2026-09-07T03:23:30Z
+$ L=/workspace/lilipod/lilipod-v2; export LILIPOD_HOME=/workspace/lilipod-store-v2
+$L create --name poc2f --userns host -v /workspace/poc/src2:/src debian:bookworm-slim /bin/sh /src/build.sh >/dev/null 2>&1
+$L start poc2f 2>/dev/null
+for i in $(seq 1 50); do sleep 15; $L ps 2>/dev/null | grep -q poc2f || break; done
+sleep 3
+ID=$($L inspect poc2f 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+echo '=== build log:'
+grep -vE 'warn\]|debug\]' $LILIPOD_HOME/lilipod/containers/$ID/current-logs | sed 's/^[0-9]*:[a-z]*://' | grep -E '^===|curl [0-9]|Protocols|title|BUILD|error' | head -16
+cp $LILIPOD_HOME/lilipod/containers/$ID/rootfs/out/curl /workspace/poc/curl-built
+$L rm poc2f >/dev/null 2>&1
+=== build log:
+=== sources: plain http egress is broken here; use https
+=== apt: update
+=== apt: installing build tools
+=== toolchain:
+=== fetching curl source
+=== configure
+configure:   SSL:              enabled (OpenSSL)   SSLS-EXPORT:      no      (--enable-ssls-export)   Protocols:        dict file ftp ftps gopher gophers http https imap imaps ipfs ipns mqtt mqtts pop3 pop3s rtsp smtp smtps telnet tftp ws wss 
+=== make -j16
+=== build result:
+curl 8.22.0 (x86_64-pc-linux-gnu) libcurl/8.22.0 OpenSSL/3.0.20 zlib/1.2.13 libpsl/0.21.2 nghttp2/1.52.0
+Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns mqtt mqtts pop3 pop3s rtsp smtp smtps telnet tftp ws wss
+=== real usage: fetch a page with the built curl
+<title>Example Domain</title>
+BUILD-OK
+[rc=0]

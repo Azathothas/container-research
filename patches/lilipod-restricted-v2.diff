@@ -1,5 +1,5 @@
 diff --git a/pkg/containerutils/container_utils.go b/pkg/containerutils/container_utils.go
-index 41b4f3d..716af2b 100644
+index 41b4f3d..51c797a 100644
 --- a/pkg/containerutils/container_utils.go
 +++ b/pkg/containerutils/container_utils.go
 @@ -25,6 +25,7 @@ import (
@@ -10,7 +10,7 @@ index 41b4f3d..716af2b 100644
  	"github.com/89luca89/lilipod/pkg/utils"
  	"github.com/google/go-containerregistry/pkg/legacy"
  	v1 "github.com/google/go-containerregistry/pkg/v1"
-@@ -574,9 +575,11 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
+@@ -574,45 +575,69 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
  		"enter",
  		"--config", string(configArg))
  
@@ -24,7 +24,49 @@ index 41b4f3d..716af2b 100644
  		os.Getenv("ROOTFUL") != constants.TrueString {
  		cloneFlags |= syscall.CLONE_NEWUSER
  	}
-@@ -603,16 +606,29 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
+ 
+-	if config.Ipc == constants.Private {
+-		cloneFlags |= syscall.CLONE_NEWIPC
+-	}
++	// Per-config namespaces only in unrestricted mode. In restricted runtimes
++	// these clones may well *succeed* (this class of runtime denies unshare(2)
++	// but often permits clone(2) with namespace flags) — and an empty network
++	// namespace then silently breaks all networking (no route, ENETUNREACH),
++	// an empty PID namespace breaks process discovery, and so on. A namespace
++	// we cannot populate is worse than none: restricted mode keeps only the
++	// positively-probed bits (SpawnFlags, currently UTS).
++	if !sandbox.Restricted() {
++		if config.Ipc == constants.Private {
++			cloneFlags |= syscall.CLONE_NEWIPC
++		}
+ 
+-	if config.Network == constants.Private {
+-		cloneFlags |= syscall.CLONE_NEWNET
+-	}
++		if config.Network == constants.Private {
++			cloneFlags |= syscall.CLONE_NEWNET
++		}
+ 
+-	if config.Pid == constants.Private {
+-		cloneFlags |= syscall.CLONE_NEWPID
+-	}
++		if config.Pid == constants.Private {
++			cloneFlags |= syscall.CLONE_NEWPID
++		}
+ 
+-	if config.Cgroup == constants.Private {
+-		cloneFlags |= syscall.CLONE_NEWCGROUP
+-	}
++		if config.Cgroup == constants.Private {
++			cloneFlags |= syscall.CLONE_NEWCGROUP
++		}
+ 
+-	if config.Time == constants.Private {
+-		cloneFlags |= syscall.CLONE_NEWTIME
++		if config.Time == constants.Private {
++			cloneFlags |= syscall.CLONE_NEWTIME
++		}
+ 	}
  
  	// Set Namespaces with generated value, this value will keep-id with the host.
  	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -58,7 +100,7 @@ index 41b4f3d..716af2b 100644
  		os.Getenv("ROOTFUL") != constants.TrueString {
  		logging.LogDebug("setting up uidmaps")
  
-@@ -652,6 +668,44 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
+@@ -652,6 +677,44 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
  //	nsenter -m -u -U --preserve-credentials -i -n -p -S 1000 -G 1000 \
  //	    -r/proc/11111/root -w/proc/11111/root/tmp/ -t 11111 command-to-run
  func generateExecCommand(containerPid string, tty bool, config utils.Config) *exec.Cmd {
@@ -104,7 +146,7 @@ index 41b4f3d..716af2b 100644
  
  	if config.Ipc == constants.Private {
 diff --git a/pkg/containerutils/rootfs_utils.go b/pkg/containerutils/rootfs_utils.go
-index b21926d..ac12866 100644
+index b21926d..8fde1ec 100644
 --- a/pkg/containerutils/rootfs_utils.go
 +++ b/pkg/containerutils/rootfs_utils.go
 @@ -15,6 +15,7 @@ import (
@@ -115,7 +157,7 @@ index b21926d..ac12866 100644
  	"github.com/89luca89/lilipod/pkg/utils"
  	"github.com/moby/sys/capability"
  )
-@@ -471,10 +472,178 @@ func setupVolumes(path string, conf utils.Config) error {
+@@ -471,10 +472,194 @@ func setupVolumes(path string, conf utils.Config) error {
  	return nil
  }
  
@@ -143,11 +185,27 @@ index b21926d..ac12866 100644
 +		}
 +	}
 +
-+	// DNS: plain copy instead of a bind mount.
-+	if hostResolv, err := fileutils.ReadFile("/etc/resolv.conf"); err == nil {
-+		if werr := fileutils.WriteFile(
-+			filepath.Join(path, "etc", "resolv.conf"), hostResolv, 0o644); werr != nil {
-+			logging.LogWarning("restricted runtime: could not set up resolv.conf: %v", werr)
++	// DNS: plain copy instead of a bind mount. Only when the rootfs does not
++	// already carry one: a host resolv.conf pointing at a loopback resolver
++	// (eg. 127.0.0.53) is unusable from inside the container, and the
++	// operator may have installed a working one.
++	if _, err := os.Lstat(filepath.Join(path, "etc", "resolv.conf")); err != nil {
++		if hostResolv, rerr := fileutils.ReadFile("/etc/resolv.conf"); rerr == nil {
++			if werr := fileutils.WriteFile(
++				filepath.Join(path, "etc", "resolv.conf"), hostResolv, 0o644); werr != nil {
++				logging.LogWarning("restricted runtime: could not set up resolv.conf: %v", werr)
++			}
++		}
++	}
++
++	// Device nodes cannot be created (mknod is denied alongside mount), and
++	// no /dev can be bind-mounted in. A regular-file /dev/null stand-in keeps
++	// shell redirections and tooling that opens /dev/null for writing
++	// working; reads return EOF. This is a compatibility shim, not a device.
++	if _, err := os.Lstat(filepath.Join(path, "dev", "null")); err != nil {
++		if f, err := os.OpenFile(
++			filepath.Join(path, "dev", "null"), os.O_CREATE|os.O_WRONLY, 0o666); err == nil {
++			_ = f.Close()
 +		}
 +	}
 +
@@ -294,7 +352,7 @@ index b21926d..ac12866 100644
  	// this section will make sure that mounts are private in this mount
  	// namespace, so that even with root we do not have pending mounts.
  	logging.LogDebug("remounting %s as private", path)
-@@ -647,15 +816,43 @@ func RunContainer(tty bool, conf utils.Config) error {
+@@ -647,15 +832,43 @@ func RunContainer(tty bool, conf utils.Config) error {
  		return fmt.Errorf("setup rootfs: %w", err)
  	}
  
@@ -343,7 +401,7 @@ index b21926d..ac12866 100644
  		err = setupCgroupfs(conf)
  		if err != nil {
  			logging.LogDebug("error: %+v", err)
-@@ -676,11 +873,18 @@ func RunContainer(tty bool, conf utils.Config) error {
+@@ -676,11 +889,18 @@ func RunContainer(tty bool, conf utils.Config) error {
  	logging.LogDebug("setting container hostname to %s", conf.Hostname)
  
  	// then we set up the hostname.
@@ -366,7 +424,7 @@ index b21926d..ac12866 100644
  	}
  
  	logging.LogDebug("become user: %s", conf.User)
-@@ -724,9 +928,11 @@ func RunContainer(tty bool, conf utils.Config) error {
+@@ -724,9 +944,11 @@ func RunContainer(tty bool, conf utils.Config) error {
  		return err
  	}
  
