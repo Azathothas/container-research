@@ -1,0 +1,11 @@
+### stock lilipod on target (2026-09-06/07): the two walls
+$ lilipod-stock run --rm alpine /bin/echo hi
+2026/09/06 16:46:30 fork/exec /workspace/lilipod/lilipod-stock: operation not permitted
+[rc=1]
+
+$ lilipod-stock run --rm --userns host alpine /bin/echo hi (ROOTFUL defaults true: main.go:94)
+2026/09/06 16:46:30 fork/exec /workspace/lilipod/lilipod-stock: operation not permitted
+[rc=1]
+
+$ lilipod-stock run --rm --userns host (UNSHARED=true past EnsureFakeRoot): tar chown wall
+(see references/paper-ox.md section 4.1)

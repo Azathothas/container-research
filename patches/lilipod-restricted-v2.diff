@@ -1,0 +1,442 @@
+diff --git a/pkg/containerutils/container_utils.go b/pkg/containerutils/container_utils.go
+index 41b4f3d..716af2b 100644
+--- a/pkg/containerutils/container_utils.go
++++ b/pkg/containerutils/container_utils.go
+@@ -25,6 +25,7 @@ import (
+ 	"github.com/89luca89/lilipod/pkg/imageutils"
+ 	"github.com/89luca89/lilipod/pkg/logging"
+ 	"github.com/89luca89/lilipod/pkg/procutils"
++	"github.com/89luca89/lilipod/pkg/sandbox"
+ 	"github.com/89luca89/lilipod/pkg/utils"
+ 	"github.com/google/go-containerregistry/pkg/legacy"
+ 	v1 "github.com/google/go-containerregistry/pkg/v1"
+@@ -574,9 +575,11 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
+ 		"enter",
+ 		"--config", string(configArg))
+ 
+-	cloneFlags := syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS
++	// In restricted runtimes SpawnFlags() keeps only positively-probed
++	// namespace bits (eg. CLONE_NEWUTS for per-container hostnames).
++	cloneFlags := sandbox.SpawnFlags()
+ 
+-	if config.Userns == constants.KeepID &&
++	if !sandbox.Restricted() && config.Userns == constants.KeepID &&
+ 		os.Getenv("ROOTFUL") != constants.TrueString {
+ 		cloneFlags |= syscall.CLONE_NEWUSER
+ 	}
+@@ -603,16 +606,29 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
+ 
+ 	// Set Namespaces with generated value, this value will keep-id with the host.
+ 	cmd.SysProcAttr = &syscall.SysProcAttr{
+-		Credential:                 &syscall.Credential{Uid: 0, Gid: 0},
+-		Cloneflags:                 uintptr(cloneFlags),
+-		GidMappingsEnableSetgroups: true,
++		Cloneflags: cloneFlags,
+ 
+ 		Setsid:     true,
+ 		Foreground: false,
+ 		Pdeathsig:  syscall.SIGTERM,
+ 	}
+ 
+-	if config.Userns == constants.KeepID &&
++	if !sandbox.Restricted() {
++		// A non-nil Credential makes the Go runtime call setgroups(2) in the
++		// child before exec. Runtimes that deny setgroups(2) then fail the
++		// whole spawn with "fork/exec ...: operation not permitted".
++		// Credential{NoSetGroups: true} suppresses exactly that call; in
++		// restricted mode we set no Credential at all, since we already run
++		// as the only mapped identity (0:0) anyway.
++		cmd.SysProcAttr.Credential = &syscall.Credential{
++			Uid:         0,
++			Gid:         0,
++			NoSetGroups: true,
++		}
++		cmd.SysProcAttr.GidMappingsEnableSetgroups = true
++	}
++
++	if !sandbox.Restricted() && config.Userns == constants.KeepID &&
+ 		os.Getenv("ROOTFUL") != constants.TrueString {
+ 		logging.LogDebug("setting up uidmaps")
+ 
+@@ -652,6 +668,44 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
+ //	nsenter -m -u -U --preserve-credentials -i -n -p -S 1000 -G 1000 \
+ //	    -r/proc/11111/root -w/proc/11111/root/tmp/ -t 11111 command-to-run
+ func generateExecCommand(containerPid string, tty bool, config utils.Config) *exec.Cmd {
++	if sandbox.Restricted() {
++		// setns(2) is unavailable in restricted runtimes, so nsenter
++		// cannot join anything. There are no namespaces to join anyway:
++		// enter a fresh chroot into the same rootfs instead.
++		logging.LogDebug("restricted runtime: using chroot enter instead of nsenter")
++
++		configArg, err := json.Marshal(config)
++		if err != nil {
++			logging.LogError("invalid config: %v", err)
++		}
++
++		args := []string{
++			"--log-level", logging.GetLogLevel(),
++			"enter",
++			"--config", string(configArg),
++		}
++
++		if tty {
++			args = append(args, "--tty")
++		}
++
++		cmd := exec.Command(os.Args[0], args...)
++		// Same namespace flags as a first start: without CLONE_NEWUTS (when
++		// available) this child would set the container hostname in the
++		// host's UTS namespace.
++		cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: sandbox.SpawnFlags()}
++		// The enter child must inherit the full environment: it re-computes
++		// the store location (GetLilipodHome reads LILIPOD_HOME/XDG_DATA_HOME/
++		// HOME). Passing only config.Env strips those, and the child then
++		// resolves a *relative* store path, fabricates an empty rootfs under
++		// its working directory, chroots into it and fails with a baffling
++		// `exec: "/bin/sh": stat ...: no such file or directory`.
++		// RunContainer applies conf.Env itself before exec'ing the payload.
++		cmd.Env = os.Environ()
++
++		return cmd
++	}
++
+ 	args := []string{"-m", "-u", "-U", "--preserve-credentials"}
+ 
+ 	if config.Ipc == constants.Private {
+diff --git a/pkg/containerutils/rootfs_utils.go b/pkg/containerutils/rootfs_utils.go
+index b21926d..ac12866 100644
+--- a/pkg/containerutils/rootfs_utils.go
++++ b/pkg/containerutils/rootfs_utils.go
+@@ -15,6 +15,7 @@ import (
+ 	"github.com/89luca89/lilipod/pkg/imageutils"
+ 	"github.com/89luca89/lilipod/pkg/logging"
+ 	"github.com/89luca89/lilipod/pkg/procutils"
++	"github.com/89luca89/lilipod/pkg/sandbox"
+ 	"github.com/89luca89/lilipod/pkg/utils"
+ 	"github.com/moby/sys/capability"
+ )
+@@ -471,10 +472,178 @@ func setupVolumes(path string, conf utils.Config) error {
+ 	return nil
+ }
+ 
++// setupRootfsRestricted prepares the rootfs for a restricted runtime
++// (see utils.Restricted): no namespace and no mount(2) syscall is
++// available, so the container will be a plain chroot.
++//
++// What we can still do:
++//   - copy the host's resolv.conf so DNS works
++//   - ensure /tmp, /run, /dev and /etc exist in the rootfs
++//   - provide configured volumes as snapshot copies
++//   - write /run/.containerenv (same as the normal path)
++//
++// What is impossible in such runtimes and thus skipped:
++//   - /proc, /sys, /dev mounts (and device nodes: mknod(2) is denied
++//     alongside mount(2)), so those directories stay as shipped in the
++//     image
++//   - tmpfs on /tmp and private cgroup/pts instances.
++func setupRootfsRestricted(path string, conf utils.Config) error {
++	logging.LogWarning("restricted runtime: setting up plain-chroot rootfs (no mounts)")
++
++	for _, dir := range []string{"tmp", "run", "dev", "etc"} {
++		if err := os.MkdirAll(filepath.Join(path, dir), 0o755); err != nil {
++			return fmt.Errorf("error creating %s in rootfs: %w", dir, err)
++		}
++	}
++
++	// DNS: plain copy instead of a bind mount.
++	if hostResolv, err := fileutils.ReadFile("/etc/resolv.conf"); err == nil {
++		if werr := fileutils.WriteFile(
++			filepath.Join(path, "etc", "resolv.conf"), hostResolv, 0o644); werr != nil {
++			logging.LogWarning("restricted runtime: could not set up resolv.conf: %v", werr)
++		}
++	}
++
++	// Volumes: no bind mounts available, take a snapshot copy instead.
++	for _, volume := range conf.Mounts {
++		if volume == "" {
++			continue
++		}
++
++		// --mount type=...,source=...,destination=... syntax
++		if strings.Contains(volume, "type=") {
++			var source, destination string
++
++			for _, field := range strings.Split(volume, ",") {
++				switch {
++				case strings.HasPrefix(field, "source="):
++					source = strings.TrimPrefix(field, "source=")
++				case strings.HasPrefix(field, "destination="):
++					destination = strings.TrimPrefix(field, "destination=")
++				}
++			}
++
++			if destination != "" {
++				if err := copyIntoRootfs(source, filepath.Join(path, destination)); err != nil {
++					logging.LogWarning("restricted runtime: volume %s unavailable: %v", volume, err)
++				}
++			}
++
++			continue
++		}
++
++		// src:dest or anonymous dest syntax
++		parts := strings.Split(volume, ":")
++
++		switch {
++		case len(parts) >= 2:
++			if err := copyIntoRootfs(parts[0], filepath.Join(path, parts[1])); err != nil {
++				logging.LogWarning("restricted runtime: volume %s unavailable: %v", volume, err)
++			}
++		default:
++			// anonymous volume: just a directory inside the rootfs
++			if err := os.MkdirAll(filepath.Join(path, volume), 0o755); err != nil {
++				logging.LogWarning("restricted runtime: volume %s unavailable: %v", volume, err)
++			}
++		}
++	}
++
++	logging.LogDebug("populating /run/.containerenv")
++
++	// setting this file ensures compatibility and gives back some info
++	infoFile, err := os.Create(filepath.Join(path, "/run/.containerenv"))
++	if err != nil {
++		logging.LogDebug("error: %+v", err)
++
++		return err
++	}
++
++	defer func() { _ = infoFile.Close() }()
++
++	info := fmt.Sprintf(`engine="%s"
++name="%s"
++id="%s"
++image="%s"
++imageid="%s"
++`, "lilipod-"+constants.Version, conf.Names, GetID(conf.Names), conf.Image, imageutils.GetID(conf.Image))
++
++	_, err = infoFile.WriteString(info)
++	if err != nil {
++		logging.LogDebug("error: %+v", err)
++
++		return err
++	}
++
++	return nil
++}
++
++// copyIntoRootfs will copy input src (file or directory) into dest,
++// creating parents as needed. Used by the restricted-runtime volume
++// handling, where real bind mounts are impossible.
++func copyIntoRootfs(src string, dest string) error {
++	if src == "" {
++		return os.MkdirAll(dest, 0o755)
++	}
++
++	info, err := os.Stat(src)
++	if err != nil {
++		return err
++	}
++
++	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
++		return err
++	}
++
++	if info.IsDir() {
++		return copyDirIntoRootfs(src, dest)
++	}
++
++	return fileutils.CopyFileContainer(src, dest)
++}
++
++// copyDirIntoRootfs will recursively copy src dir into dest.
++func copyDirIntoRootfs(src string, dest string) error {
++	entries, err := os.ReadDir(src)
++	if err != nil {
++		return err
++	}
++
++	if err := os.MkdirAll(dest, 0o755); err != nil {
++		return err
++	}
++
++	for _, entry := range entries {
++		srcEntry := filepath.Join(src, entry.Name())
++		destEntry := filepath.Join(dest, entry.Name())
++
++		if entry.IsDir() {
++			if err := copyDirIntoRootfs(srcEntry, destEntry); err != nil {
++				return err
++			}
++
++			continue
++		}
++
++		if err := fileutils.CopyFileContainer(srcEntry, destEntry); err != nil {
++			// symlinks and special files are copied on a best-effort basis
++			logging.LogDebug("restricted runtime: skipping %s: %v", srcEntry, err)
++		}
++	}
++
++	return nil
++}
++
+ // SetupRootfs will set up the rootfs defined in conf into path.
+ // This will also populate container's /run/.containerenv.
+ func SetupRootfs(conf utils.Config) error {
+ 	path := GetRootfsDir(conf.ID)
++
++	// In restricted runtimes we cannot perform any mount: set up a
++	// plain-chroot rootfs instead (this also writes .containerenv).
++	if sandbox.Restricted() {
++		return setupRootfsRestricted(path, conf)
++	}
++
+ 	// this section will make sure that mounts are private in this mount
+ 	// namespace, so that even with root we do not have pending mounts.
+ 	logging.LogDebug("remounting %s as private", path)
+@@ -647,15 +816,43 @@ func RunContainer(tty bool, conf utils.Config) error {
+ 		return fmt.Errorf("setup rootfs: %w", err)
+ 	}
+ 
+-	err = PivotRoot(GetRootfsDir(conf.ID))
+-	if err != nil {
+-		logging.LogError("error: %+v", err)
++	if sandbox.Restricted() {
++		// no mount namespace of our own: pivot_root is both impossible
++		// and would affect the whole host. A plain chroot gives the
++		// container process its own root directory and cwd clamp.
++		logging.LogDebug("restricted runtime: entering rootfs via chroot")
+ 
+-		return err
++		rootfsDir, err := filepath.Abs(GetRootfsDir(conf.ID))
++		if err != nil {
++			logging.LogError("error: %+v", err)
++
++			return err
++		}
++
++		err = syscall.Chroot(rootfsDir)
++		if err != nil {
++			logging.LogError("error: %+v", err)
++
++			return err
++		}
++
++		err = syscall.Chdir("/")
++		if err != nil {
++			logging.LogError("error: %+v", err)
++
++			return err
++		}
++	} else {
++		err = PivotRoot(GetRootfsDir(conf.ID))
++		if err != nil {
++			logging.LogError("error: %+v", err)
++
++			return err
++		}
+ 	}
+ 
+ 	// setup cgrups if private
+-	if conf.Cgroup != constants.Host {
++	if conf.Cgroup != constants.Host && !sandbox.Restricted() {
+ 		err = setupCgroupfs(conf)
+ 		if err != nil {
+ 			logging.LogDebug("error: %+v", err)
+@@ -676,11 +873,18 @@ func RunContainer(tty bool, conf utils.Config) error {
+ 	logging.LogDebug("setting container hostname to %s", conf.Hostname)
+ 
+ 	// then we set up the hostname.
+-	err = syscall.Sethostname([]byte(conf.Hostname))
+-	if err != nil {
+-		logging.LogDebug("error: %+v", err)
++	// A private UTS namespace may still be available in restricted runtimes
++	// (clone(CLONE_NEWUTS) can be permitted while unshare(2) is not): if the
++	// probe says so, the enter child was spawned with CLONE_NEWUTS and we
++	// can safely set the container hostname. Otherwise renaming would leak
++	// to the host, so we skip it.
++	if sandbox.UTSAvailable() {
++		err = syscall.Sethostname([]byte(conf.Hostname))
++		if err != nil {
++			logging.LogDebug("error: %+v", err)
+ 
+-		return fmt.Errorf("error setting hostname for namespace: %w", err)
++			return fmt.Errorf("error setting hostname for namespace: %w", err)
++		}
+ 	}
+ 
+ 	logging.LogDebug("become user: %s", conf.User)
+@@ -724,9 +928,11 @@ func RunContainer(tty bool, conf utils.Config) error {
+ 		return err
+ 	}
+ 
+-	if err := setCapabilities(keepCaps...); err != nil {
+-		fmt.Fprintf(os.Stderr, "error setting capabilities for process: %v\n", err)
+-		os.Exit(1)
++	if !sandbox.Restricted() {
++		if err := setCapabilities(keepCaps...); err != nil {
++			fmt.Fprintf(os.Stderr, "error setting capabilities for process: %v\n", err)
++			os.Exit(1)
++		}
+ 	}
+ 
+ 	if tty {
+diff --git a/pkg/fileutils/file_utils.go b/pkg/fileutils/file_utils.go
+index fb50b8f..5881402 100644
+--- a/pkg/fileutils/file_utils.go
++++ b/pkg/fileutils/file_utils.go
+@@ -16,6 +16,7 @@ import (
+ 	"github.com/89luca89/lilipod/pkg/constants"
+ 	"github.com/89luca89/lilipod/pkg/logging"
+ 	"github.com/89luca89/lilipod/pkg/procutils"
++	"github.com/89luca89/lilipod/pkg/sandbox"
+ )
+ 
+ // ReadFile will return the content of input file or error.
+@@ -405,8 +406,17 @@ func UntarFile(path string, target string, userns string) error {
+ 		return err
+ 	}
+ 
+-	if userns != constants.KeepID {
+-		cmd := exec.Command("tar", "--exclude=dev/*", "-xf", path, "-C", target)
++	if userns != constants.KeepID || sandbox.Restricted() {
++		args := []string{"--exclude=dev/*", "-xf", path, "-C", target}
++
++		if sandbox.Restricted() {
++			// ownership changes to non-root ids are denied in restricted
++			// runtimes (chown(2) fails with EINVAL): keep the extractor's
++			// ownership instead of the archive's.
++			args = append(args, "--no-same-owner")
++		}
++
++		cmd := exec.Command("tar", args...)
+ 		logging.LogDebug("no keep-id specified, simply perform %v", cmd.Args)
+ 
+ 		out, err := cmd.CombinedOutput()
+diff --git a/pkg/procutils/proc_utils.go b/pkg/procutils/proc_utils.go
+index ee195a2..6825898 100644
+--- a/pkg/procutils/proc_utils.go
++++ b/pkg/procutils/proc_utils.go
+@@ -17,12 +17,22 @@ import (
+ 
+ 	"github.com/89luca89/lilipod/pkg/constants"
+ 	"github.com/89luca89/lilipod/pkg/logging"
++	"github.com/89luca89/lilipod/pkg/sandbox"
+ )
+ 
+ // EnsureFakeRoot will ensure process is executed with rootless-helper.
+ func EnsureFakeRoot(interactive bool) (bool, error) {
+ 	logging.LogDebug("ensuring we're either root or fake-root")
+ 
++	// In a restricted runtime (no namespaces available) there is no
++	// fake-root to ensure: if we are root we just proceed, if we are
++	// not root we cannot gain capabilities at all.
++	if sandbox.Restricted() && os.Getuid() == 0 {
++		logging.LogDebug("restricted runtime: proceeding without namespaces")
++
++		return false, nil
++	}
++
+ 	// As files can be owned by root or fake roots, let's run either as root or
+ 	// with rootless-helper
+ 	if os.Getuid() == 0 &&

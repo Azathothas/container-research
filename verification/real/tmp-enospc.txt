@@ -1,0 +1,7 @@
+### /tmp capacity vs dwarfs payload (2026-09-07)
+$ grep " /tmp " /proc/self/mountinfo
+225 224 0:72 / /tmp rw,nosuid,nodev,relatime - tmpfs tmpfs rw,size=65536k,uid=1000,gid=1000,inode64
+
+$ dd if=/dev/zero of=/tmp/fill bs=1M count=70
+64049152 bytes (64 MB, 61 MiB) copied, 0.0189206 s, 3.4 GB/s
+(64 MiB tmpfs; a 298 MB payload extraction overshoots -> archive_write_data -> ARCHIVE_WARN(-20) with archive_errno ENOSPC, matching libarchive.txt)

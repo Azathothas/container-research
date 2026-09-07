@@ -1,0 +1,31 @@
+unshare(CLONE_NEWNS)               FAIL errno=1 EPERM
+unshare(CLONE_NEWUSER)             FAIL errno=1 EPERM
+unshare(CLONE_NEWPID)              FAIL errno=1 EPERM
+clone(CLONE_NEWNS)                 OK
+clone(CLONE_NEWUTS|NEWNS)          OK
+clone(CLONE_NEWUSER)               OK
+mount(tmpfs,/mnt)                  FAIL errno=1 EPERM
+mount(MS_SLAVE,/)                  FAIL errno=1 EPERM
+mount(MS_SLAVE,/)                  FAIL errno=1 EPERM
+mount(MS_SLAVE,/) in clone(NEWNS)  OK
+pivot_root(/tmp,/tmp)              FAIL errno=1 EPERM
+ptrace(PTRACE_TRACEME)             FAIL errno=1 EPERM
+mknod(chr 1:3 /tmp/nodprobe)       FAIL errno=1 EPERM
+mknod(chr 0:0 = whiteout)          OK
+setuid(1000)                       FAIL errno=22 EINVAL
+setuid(0)                          OK
+setgid(0)                          OK
+setgroups(0,NULL)                  FAIL errno=1 EPERM
+chown(f,0,0)                       OK
+chown(f,0,42)                      FAIL errno=22 EINVAL
+lchown(f,0,42)                     FAIL errno=22 EINVAL
+chown(f,1000,0)                    FAIL errno=22 EINVAL
+chroot(/tmp)                       OK
+memfd_create                       OK
+memfd_create+exec                  OK
+setsid                             OK
+prctl(PR_SET_PDEATHSIG)            OK
+exec(/tmp/execprobe)               OK
+getrandom                          OK
+write(/etc/probe)                  FAIL errno=13 EACCES
+write into uid-1000-owned dir      FAIL errno=2 ENOENT

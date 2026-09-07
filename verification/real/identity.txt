@@ -1,0 +1,12 @@
+### target identity, one read (2026-09-07)
+$ cat /proc/self/uid_map /proc/self/gid_map /proc/self/setgroups
+         0       1000          1
+         0       1000          1
+deny
+
+$ id
+uid=0 gid=0 groups=0,65534
+
+$ ls -l /proc/self/ns/user /proc/1/ns/user
+lrwxrwxrwx 1 0 0 0 Sep  7 02:37 /proc/1/ns/user -> user:[4026533335]
+lrwxrwxrwx 1 0 0 0 Sep  7 02:54 /proc/self/ns/user -> user:[4026533335]

@@ -1,0 +1,10 @@
+## cchown under the shim
+shim: intercepted lchown("/tmp/shimtarget")
+c lchown() rc=-1 Invalid argument
+## gochown-nocgo under the shim
+go os.Lchown -> lchown /tmp/shimtarget: invalid argument
+## gochown-cgo under the shim
+go os.Lchown -> lchown /tmp/shimtarget: invalid argument
+## go lchown(0,42) under the reconstructed runtime
+confine: setgroups: operation not permitted
+confine: userns: fork/exec /proc/self/exe: permission denied

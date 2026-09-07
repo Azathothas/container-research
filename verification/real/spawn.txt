@@ -1,0 +1,27 @@
+## unconfined
+no SysProcAttr                     OK
+SysProcAttr{} (no Credential)      OK
+Credential{0,0}                    FAIL errno=1 EPERM
+Credential{0,0}+GidMapEnableSetgroups FAIL errno=1 EPERM
+Credential{0,0,NoSetGroups:true}   OK
+Credential{0,0,NoSetGroups}+Pdeath OK
+GidMappings+!EnableSetgroups       FAIL errno=13 EACCES
+Cloneflags=CLONE_NEWNS             OK
+Cloneflags=NEWUTS|NEWNS            OK
+Cloneflags=NEWNS + Credential{0,0} FAIL errno=1 EPERM
+
+## userns only (setgroups denied by the namespace)
+confine: setgroups: operation not permitted
+confine: userns: fork/exec /proc/self/exe: permission denied
+
+## seccomp denies setgroups
+no SysProcAttr                     OK
+SysProcAttr{} (no Credential)      OK
+Credential{0,0}                    FAIL errno=1 EPERM
+Credential{0,0}+GidMapEnableSetgroups FAIL errno=1 EPERM
+Credential{0,0,NoSetGroups:true}   OK
+Credential{0,0,NoSetGroups}+Pdeath OK
+GidMappings+!EnableSetgroups       FAIL errno=13 EACCES
+Cloneflags=CLONE_NEWNS             OK
+Cloneflags=NEWUTS|NEWNS            OK
+Cloneflags=NEWNS + Credential{0,0} FAIL errno=1 EPERM

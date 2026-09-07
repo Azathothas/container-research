@@ -1,0 +1,4 @@
+### runimage rootfs pacman.conf directives (2026-09-07)
+$ grep -nE "DownloadUser|CheckSpace" /workspace/runimage/RunDir/rootfs/etc/pacman.conf
+53:CheckSpace
+(CheckSpace enabled at line 53; no DownloadUser directive)

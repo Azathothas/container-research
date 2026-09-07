@@ -1,0 +1,10 @@
+uid=0 gid=0 groups=[65534 65534 65534 65534 65534 65534 65534 65534 0]
+CapPrm:	000001ffffffffff
+CapEff:	000001ffffffffff
+CapBnd:	000001ffffffffff
+NoNewPrivs:	1
+Seccomp:	2
+Seccomp_filters:	1
+/proc/self/uid_map: 0       1000          1
+/proc/self/gid_map: 0       1000          1
+/proc/self/setgroups: deny

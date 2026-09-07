@@ -1,0 +1,11 @@
+### real bwrap differential (bubblewrap 0.11.0 from runimage payload, 2026-09-07)
+$ bwrap --version
+bubblewrap 0.11.0
+$ bwrap --ro-bind / / /bin/true
+bwrap: Failed to make / slave: Operation not permitted
+$ bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp /bin/true
+bwrap: Failed to make / slave: Operation not permitted
+$ bwrap --unshare-user-try --ro-bind / / /bin/true
+bwrap: setting up uid map: Permission denied
+$ bwrap --unshare-all --ro-bind / / /bin/true
+bwrap: setting up uid map: Permission denied

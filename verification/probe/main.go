@@ -234,7 +234,14 @@ func main() {
 			fmt.Fprintln(os.Stderr, "no such check:", name)
 			os.Exit(2)
 		}
-		fmt.Println(format(name, fn()))
+		err := fn()
+		fmt.Println(format(name, err))
+		// Exit non-zero on failure so a parent that re-execs this binary
+		// (eg. the "in clone(NEWNS)" mount row) can report the verdict from
+		// the exit code instead of silently succeeding.
+		if err != nil {
+			os.Exit(1)
+		}
 	case "census":
 		// One child per check: a check that succeeds cannot leak its effect
 		// into the next one.

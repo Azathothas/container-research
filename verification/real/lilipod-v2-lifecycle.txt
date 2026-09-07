@@ -1,0 +1,39 @@
+### captured: 2026-09-07T02:52:04Z
+$ L=/workspace/lilipod/lilipod-v2; export LILIPOD_HOME=/workspace/lilipod-store-v2
+$L create --name final --hostname finalhost --userns host alpine:latest /bin/sh -c 'sleep 60' 2>/dev/null
+setsid bash -c 'LILIPOD_HOME=/workspace/lilipod-store-v2 $L start final >/dev/null 2>&1' < /dev/null &
+sleep 3
+echo '--- ps:'; $L ps 2>/dev/null | tail -1
+echo '--- exec (was broken in v1):'; $L exec -i final /bin/sh -c 'echo EXEC-WORKS; hostname' 2>/dev/null
+sleep 1; echo "--- host hostname after (must be sandbox): $(hostname)"
+echo '--- stop/rm:'; $L stop final 2>/dev/null; $L rm final 2>/dev/null; echo done
+2a1585a864d9e67627c6ae04c807a2c5
+--- ps:
+CONTAINER ID	IMAGE	COMMAND	CREATED	STATUS	LABELS	NAMES
+--- exec (was broken in v1):
+--- host hostname after (must be sandbox): sandbox
+--- stop/rm:
+final
+done
+[rc=0]
+### captured: 2026-09-07T02:52:24Z
+$ L=/workspace/lilipod/lilipod-v2; export LILIPOD_HOME=/workspace/lilipod-store-v2
+$L create --name final2 --hostname finalhost --userns host alpine:latest /bin/sh -c 'sleep 60' 2>/dev/null
+setsid bash -c "LILIPOD_HOME=/workspace/lilipod-store-v2 $L start final2 >/dev/null 2>&1" < /dev/null &
+sleep 3
+echo '--- ps:'; $L ps 2>/dev/null | tail -1
+echo '--- exec (was broken in v1):'; $L exec -i final2 /bin/sh -c 'echo EXEC-WORKS; hostname' 2>/dev/null
+sleep 1; echo "--- host hostname after (must be sandbox): $(hostname)"
+echo '--- stop/rm:'; $L stop final2 2>/dev/null; $L rm final2 2>/dev/null; echo done
+3ccc71096dc9f81c5ece7df9c3ccf0bf
+--- ps:
+3ccc71096dc9f81c5ece7df9c3ccf0bf	alpine:latest	/bin/sh -c slee...	2026.09.07 02:52:24	running	      	final2
+--- exec (was broken in v1):
+EXEC-WORKS
+finalhost
+--- host hostname after (must be sandbox): sandbox
+--- stop/rm:
+final2
+final2
+done
+[rc=0]

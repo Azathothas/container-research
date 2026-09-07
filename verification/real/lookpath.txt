@@ -1,0 +1,13 @@
+## chroot into an image rootfs whose /dev is empty
+A. Command("/bin/sh") built BEFORE chroot, Err = <nil>
+B. LookPath("/bin/sh") AFTER chroot        = exec: "/bin/sh": stat /bin/sh: no such file or directory
+C. Command built AFTER chroot, Run          = open /dev/null: no such file or directory
+D. LookPath("sh") AFTER chroot             = exec: "sh": executable file not found in $PATH
+## chroot into a root that has no /bin/sh (the wrong-root case)
+A. Command("/bin/sh") built BEFORE chroot, Err = <nil>
+B. LookPath("/bin/sh") AFTER chroot        = exec: "/bin/sh": stat /bin/sh: no such file or directory
+C. Command built AFTER chroot, Run          = open /dev/null: no such file or directory
+D. LookPath("sh") AFTER chroot             = exec: "sh": executable file not found in $PATH
+## chroot execution under the reconstructed model
+confine: setgroups: operation not permitted
+confine: userns: fork/exec /proc/self/exe: permission denied

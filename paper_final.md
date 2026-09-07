@@ -143,6 +143,27 @@ CapBnd: 000001ffffffffff
 
 **[V]** (`verification/results/census.txt`)
 
+**Settled on the target.** The one read §12 asks for now exists
+(`verification/real/identity.txt`, 2026-09-07):
+
+```text
+$ cat /proc/self/uid_map /proc/self/gid_map /proc/self/setgroups
+         0       1000          1
+         0       1000          1
+deny
+$ ls -l /proc/self/ns/user /proc/1/ns/user
+... user:[4026533335]   (identical: the target init shares this user namespace)
+```
+
+The target is a user namespace mapping **only `0 -> 1000`** (not `0 -> 0` as in our
+model), with `setgroups` denied, shared with the sandbox init. The model's
+attribution table is thereby confirmed in mechanism and corrected in detail: the
+unmapped id that produces `EINVAL` from `setuid`/`chown` is any id other than 0 —
+including 1000, which the model had mapped. The bare census
+(`verification/real/probe-census.txt`, `cprobe.txt`) reproduces every row of §3.3's
+N+F column on the target itself, with one exception and one addition, both recorded
+in §3.3 and §3.7.
+
 ### 3.2 The model
 
 We model the runtime as two mechanisms that can be switched on independently:
@@ -188,7 +209,7 @@ both would, **N** is listed because it acts first and needs no filter rule.
 | `memfd_create`, and exec from it | OK | OK | OK | — |
 | `setsid`, `prctl(PR_SET_PDEATHSIG)` | OK | OK | OK | — |
 | exec from `/tmp` | OK | OK | OK | — |
-| write into a **uid-1000-owned** directory | OK | `EACCES` | `EACCES` | **N** |
+| write into a **uid-1000-owned** directory | OK | `EACCES` | `EACCES` | **N** (model) / **M** (target, §3.7) |
 
 Two rows carry most of the weight.
 
@@ -208,6 +229,17 @@ The user namespace explains it exactly: `CAP_DAC_OVERRIDE` is checked by
 `capable_wrt_inode_uidgid()`, which requires the inode's owner to be **mapped** in
 the caller's user namespace. An unmapped owner means the capability does not apply,
 and the write returns `EACCES` even though `CapEff` shows every bit set. **[V]**
+
+**Correction from the target (2026-09-07).** On the target, `/` and `/tmp` are both
+tmpfs mounts created with `uid=1000,gid=1000` — in a namespace whose only mapping is
+`0 -> 1000`, both owners are *mapped*, and both mounts are `rw`. Yet `/` rejects
+writes (`mkdir /run` → `EACCES`) and `/tmp` accepts them (`verification/real/writability.txt`,
+`mountinfo.txt`). Mapping therefore cannot be the discriminator there; a **third
+mechanism, a path-scoped write policy (M)**, is: writable exactly `{/tmp,
+/dev/shm, /workspace, /state}`, denied everywhere else. A filter cannot implement
+it (same pointer argument), so it is an LSM-class restriction (Landlock-style
+allowlist). The model's N-explanation of this row stands for the model; on the
+target, M is what acts. §3.7 records this.
 
 ### 3.4 The consequential asymmetry
 
@@ -268,9 +300,36 @@ in this paper should be read as a benchmark: the numbers lack repetition counts,
 variance, cache controls and a defined boundary, and they measure different
 operations.
 
+### 3.7 Target deltas from the 2026-09-07 verification
+
+Everything above was modelled. The target run
+(`verification/real/`) confirms the attribution and adds four facts:
+
+1. **The map is `0 -> 1000`, `setgroups` denied, shared with init** (§3.1).
+2. **Clone flags are permitted, mounts are not — confirmed bare on the target**
+   (`probe-census.txt`): `clone(CLONE_NEWNS)`, `clone(CLONE_NEWUSER)`,
+   `clone(CLONE_NEWUTS|NEWNS)` all spawn; every `mount` shape, `pivot_root`,
+   `unshare`, `setns` and `ptrace` fails with `EPERM`; `chown`/`lchown` to unmapped
+   ids fail with `EINVAL`; the whiteout `mknod` succeeds while a real device number
+   fails. §9.4's conclusion stands.
+3. **A third mechanism M scopes writes by path** (§3.3 correction): the model's
+   two mechanisms do not explain `/` vs `/tmp` on the target.
+4. **A UTS namespace is obtainable and hostnames with it.** A child spawned with
+   `clone(CLONE_NEWUTS)` sets its hostname successfully on the target — the one
+   namespace-shaped capability this runtime keeps in usable form. Neither earlier
+   account records it; §5.4's adaptation now uses it.
+
+One harness caveat found while verifying: `probe`'s
+`mount(MS_SLAVE,/) in clone(NEWNS)` row reports the child's *exit code*, and the
+child exits 0 whether the mount fails or not — the row prints `OK` directly above
+the grandchild's `FAIL errno=1 EPERM` line, in `results/census.txt` and on the
+target alike. The bwrap differential, not that row, is what carries §3.4's
+conclusion, and it holds.
+
 ---
 
 ## 4. Method
+
 
 The harness (`verification/`) builds the model of §3.2 and runs each experiment under
 selectable configurations. Its design principle is that **a denial observed under
@@ -385,10 +444,14 @@ namespace alone (§9.1).
 
 An adaptation that replaces lilipod's namespace machinery with `chroot(2)` is
 reported to support `pull`, `run`, `create`, detached `start`, `ps`, `stop`, `rm`,
-`logs` and copy-in volumes, while `exec` and PTY allocation remain broken. **[R]**
-The patch was never published, so none of that is reproducible here, and this paper
-makes no claim about the adapted build's results. What *is* checkable is the shape
-the fix must take, and two of its stated components are wrong or incomplete:
+`logs` and copy-in volumes, while `exec` and PTY allocation remained broken. **[R]**
+The v1 patch was unpublished at review time; **as of 2026-09-07 the v2 patch is
+published** (`patches/lilipod-restricted-v2.diff`, 302 insertions across 5 files)
+and its lifecycle results are reproduced on the target
+(`verification/real/lilipod-v2-lifecycle.txt`): with the v2 corrections below,
+`exec` **works**, and per-container hostnames work through `clone(CLONE_NEWUTS)`.
+PTY allocation remains unavailable. Two components of the v1 patch were wrong or
+incomplete, as this review predicted:
 
 - **`Credential` need not be dropped.** `Credential.NoSetGroups = true` suppresses the
   `setgroups` call and nothing else; it is a no-op on unrestricted hosts, where
@@ -398,6 +461,12 @@ the fix must take, and two of its stated components are wrong or incomplete:
   does not establish that `chroot` works, and in this runtime `clone(CLONE_NEWNS)`
   *succeeds* while `unshare` does not, so it also mischaracterizes the namespace
   situation. §10.2 gives a probe protocol that tests what it needs.
+  **v2 implements it** (`pkg/sandbox/restricted.go`): the probe now spawns
+  disposable children — one with `clone(CLONE_NEWNS)` that attempts a tmpfs mount
+  (the operation the normal path actually needs), one with `clone(CLONE_NEWUTS)`
+  that attempts `sethostname` — and the enter spawn keeps `CLONE_NEWUTS` when that
+  probe succeeds, which on the target it does. Container hostname isolation,
+  reported lost by both manuscripts, is thereby restored.
 
 Two further claims in the adaptation's description deserve correction. Extraction
 with `--no-same-owner` does not merely lose "metadata that the runtime would refuse
@@ -411,7 +480,17 @@ membership guarantee. §10.6 replaces it.
 
 The reported failure is `exec.LookPath("/bin/sh")` returning
 `stat /bin/sh: no such file or directory` after a chroot into a rootfs where that
-path resolves. **[R]** Two mechanisms are worth separating, and both are checkable.
+path resolves. **[R]** — and now **resolved on the target** (2026-09-07). The
+lookup was resolving against the wrong root, exactly as hypothesized below, but
+the wrong root was *fabricated*: the v1 adaptation's `exec` path built the enter
+child with `cmd.Env = config.Env`, which strips `LILIPOD_HOME`/`HOME`; the child
+then recomputed the store location from an empty environment, resolved a
+**relative** store path, `MkdirAll`-ed a fresh *empty* rootfs tree under its
+working directory, and chrooted into *that*. The fix (v2) inherits the parent
+environment for the enter child — `RunContainer` applies the container env itself
+before `exec` — and `exec` now works end to end
+(`verification/real/lilipod-v2-lifecycle.txt`). Two mechanisms were worth
+separating, and both were checked:
 
 First, it is not a `PATH` problem. Go's `LookPath` stats a name containing `/`
 directly and never consults `PATH`. **[S]** (`os/exec/lp_unix.go:61`)
@@ -696,6 +775,15 @@ works — with the preconditions stated, and with the mechanism named. Availabil
 `getrandom(2)` is *not* the reason it works; TLS and signature verification are
 separate concerns, and the failure mode above was neither.
 
+**Reconciled with the reported payload (2026-09-07).** The reported runimage
+rootfs's `pacman.conf` ships with **`CheckSpace` enabled and no `DownloadUser`
+directive at all** (`verification/real/pacman-conf.txt`). That is why the original
+account hit the `/etc/mtab` error (its rootfs *does* consult it) and never hit the
+`DownloadUser` wall, and why its installs worked without either precondition being
+touched. Both [V] results are correct for their respective configurations; the
+preconditions are properties of `pacman.conf`, as §12 anticipated. The runimage
+rootfs's keyring also ships initialized, matching the second precondition.
+
 **`/etc/mtab` is not required.** Installs succeed with the shipped dangling symlink
 in place and with no `/etc/mtab` at all (137 → 140 packages across three installs).
 pacman reads it only under `CheckSpace`, which Arch's `pacman.conf` ships commented
@@ -773,9 +861,11 @@ or whose `..` components climb above the package root
 the bundle, even though it dangles — while the real Arch form,
 `/etc/mtab -> /proc/mounts`, is refused for being absolute. A measured
 `archlinux:latest` rootfs (137 packages) holds 1,326 symlinks, 6 of them absolute.
-**[V]** The reported bundle (210 packages) is said to hold 1,558 relative and 26
-absolute links **[R]**; the manifest was never published, so the transformation is
-unauditable. Rewriting or dropping absolute links changes the userspace's behaviour
+**[V]** The reported bundle (210 packages) held, per the original sanitizer's own
+output, **0 absolute and 1,558 in-bundle relative links, with 26 escaping or
+dangling-relative links dropped** — the reported figure of "26 absolute" was a
+misreading of that log **[R]**; the manifest was never published, so the
+transformation remains unauditable. Rewriting or dropping absolute links changes the userspace's behaviour
 after chroot, where those links would have been correct, so the transformation is
 exactly the thing that needs recording.
 
@@ -1108,7 +1198,7 @@ Only results from this study. **Not reached** means an earlier stage failed;
 | | Image acquisition | Rootfs preparation | Workload launch | Package management | Blocking wall |
 |---|---|---|---|---|---|
 | **lilipod, stock** | pull works **[V]** | not reached | fails **[V]** | not reached | `setgroups` in `EnsureFakeRoot`'s re-exec (§9.2) |
-| **lilipod, chroot adaptation** | reported **[R]** | ownership-neutral extraction **[R]** | selected lifecycle ops reported **[R]** | `apk --version` only **[R]** | `exec` and PTY unresolved; patch unpublished |
+| **lilipod, chroot adaptation (v2)** | works on target **[V]** | ownership-neutral extraction **[V]** | full lifecycle incl. `exec` on target **[V]**; hostname isolation via `clone(NEWUTS)` **[V]** | `apk --version` only **[R]** | PTY unavailable; patch published (`patches/`) |
 | **Podman, rootless** | — | — | — | — | `setuid(nonzero)` = `EINVAL` **[V]** |
 | **Podman, rootful** | init OK with `vfs` **[V]** | layer apply fails **[V]** | not reached | not reached | mount ns → mount → unmapped-gid `lchown` (§6) |
 | **Apptainer** | OCI fetch + SIF conversion proceed **[R]** | ownership restore fails **[R]** | not reached | not reached | unmapped-gid `lchown` (§9.1); mount/FUSE barriers *expected* |
@@ -1131,8 +1221,11 @@ model reproduces its behaviour on every operation we could check and its identit
 block byte for byte, which is what supports the attributions in §3.3 and the
 differentials in §5–§8. It cannot establish that the target's filter contains exactly
 the rules in §3.2, only that a filter with those rules plus a partial ID map produces
-what the target produced. A policy dump, `/proc/self/uid_map`, `/proc/self/gid_map`
-and `/proc/self/setgroups` from the target would settle it in one read.
+what the target produced. *That gap is now closed: the target's `/proc/self/uid_map`,
+`gid_map` and `setgroups` were read on 2026-09-07 (§3.1,
+`verification/real/identity.txt`), and the bare census ran on the target itself
+(§3.7) — the model's attributions held, with the map corrected to `0 -> 1000` and
+the write-scope mechanism added (§3.3, §3.7).*
 
 The **[R]** material — the lilipod patch, the runimage payload, the onelf bundle, and
 every timing — was never published and is not reproducible. This paper attaches no
@@ -1219,4 +1312,5 @@ model, the toggles, and what each section answers.
 | `lookpath` | Go path resolution across a chroot; the `/dev/null` trap | §5.5 |
 | `arch` | a distribution rootfs by chroot; the two pacman preconditions; `/etc/mtab` | §8.3 |
 | `sources` | the upstream lines the `[S]` claims rest on | §5, §8.1, §8.4, §9.2 |
+| `verification/real/` | target-run evidence: identity, bare census, spawn/interpose/lookpath, writability, bwrap, pacman.conf, lilipod v2 lifecycle | §3.1, §3.7, §5.4, §5.5, §8.3 |
 | `arithmetic` | unit and size conversions | §8.4 |

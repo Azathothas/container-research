@@ -1,0 +1,11 @@
+### writability is a path allowlist, not a mapping effect (2026-09-07)
+/ denied
+/tmp WRITABLE
+/workspace WRITABLE
+/dev denied
+/dev/shm WRITABLE
+/state WRITABLE
+/usr denied
+/bin denied
+/etc denied
+/home denied

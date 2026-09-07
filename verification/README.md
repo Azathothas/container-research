@@ -64,3 +64,23 @@ The model reproduces the reported runtime's observable behaviour; it is not
 that runtime. It cannot confirm the reported wall-clock timings, the lilipod
 patch (never published), the runimage payload, or the onelf bundle. Where the
 paper relies on those, it says so.
+
+
+## Target-run evidence (`real/`)
+
+The `results/` directory holds captures from the *model* run. `real/` holds captures
+from the **target runtime itself** (2026-09-07), where the bare probes run directly:
+no confine layer is possible there (confine's own setup needs `setgroups` and an
+unshare-style spawn, both denied on the target — see `real/lilipod-stock.txt` for the
+equivalent wall in lilipod). What `real/` establishes: the ID maps (`identity.txt`),
+the full bare census (`probe-census.txt`, `cprobe.txt`), the spawn and interposition
+matrices (`spawn.txt`, `interpose.txt`), the path-scoped write policy
+(`writability.txt`), the bwrap differential (`bwrap.txt`), the runimage pacman
+configuration (`pacman-conf.txt`), the `/tmp` capacity vs payload fact
+(`tmp-enospc.txt`), and the lilipod v2 lifecycle (`lilipod-v2-lifecycle.txt`).
+
+Note on `probe`: the `mount(MS_SLAVE,/) in clone(NEWNS)` row historically reported
+the child's exit code, and the child exited 0 regardless of the mount verdict — the
+row said `OK` directly above the grandchild's `FAIL errno=1 EPERM` line. `check`
+now exits non-zero on failure, so the row reports the verdict (as
+`FAIL exit status 1`) on runtimes where the mount is denied.

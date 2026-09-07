@@ -1,0 +1,6 @@
+### lilipod v2 restricted-runtime probe (first invocation, 2026-09-07)
+$ lilipod-v2 ps
+CONTAINER ID	IMAGE	COMMAND	CREATED	STATUS	LABELS	NAMES
+
+(probe: disposable child spawned with clone(CLONE_NEWNS) attempts a tmpfs mount;
+ second child with clone(CLONE_NEWUTS) attempts sethostname)
