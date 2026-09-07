@@ -1,0 +1,21 @@
+### the void OCI-whiteout case, end to end (2026-09-07)
+$ IMG=lilipod-store/.../images/b3c8cf01ed503cea769e06f2d7becbb6 (voidlinux-musl:latest)
+$ tar tzvf layer-1 (91c43422...) | grep var/cache :
+drwxr-xr-x 0/0               0 2021-07-25 10:39 var/cache/
+lrwxrwxrwx 0/0               0 2021-07-25 10:39 var/cache/xbps -> /var/cache/xbps
+$ tar tzvf layer-2 (bfc5f30a...) | grep wh :
+-rw------- 0/0               0 2021-07-25 10:40 var/cache/.wh.xbps
+
+$ # sequential plain-tar extraction of var/cache/* from both layers (= lilipod <= v2.1):
+$ ls -la /tmp/wh/var/cache/
+drwxr-xr-x 3 0 0  3 Sep  7 12:44 ..
+-rw------- 1 0 0  0 Jul 25  2021 .wh.xbps
+lrwxrwxrwx 1 0 0 15 Jul 25  2021 xbps -> /var/cache/xbps
+$ chroot /tmp/wh /bin/sh -c "cd /var/cache/xbps"    # what xbps does for its cachedir:
+/bin/sh: cd: line 0: can't cd to /var/cache/xbps: Symbolic link loop
+rc=2 -> errno 40 (ELOOP): xbps fails with 'failed to change dir to cachedir /var/cache/xbps: Symbolic link loop'
+
+Layer 2 ships the .wh.xbps whiteout that is supposed to delete the loop,
+but plain tar does not interpret whiteouts: the loop survives and the
+marker leaks in as a literal file. ApplyOCIWhiteouts (lilipod v2.2+) deletes
+the target then the marker after each layer, restoring OCI semantics.

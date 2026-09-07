@@ -1,0 +1,46 @@
+### captured: 2026-09-07T12:11:06Z
+$ sh /workspace/poc/poc5-generic.sh voidlinux/voidlinux-musl:latest void
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: void (ID=void)
+unknown distro ID=void
+[rc=0]
+### captured: 2026-09-07T12:11:25Z
+$ sh /workspace/poc/poc5-generic.sh voidlinux/voidlinux-musl:latest void
+pulling layer 91c43422d24e22cf3350fe6fc2bd2d9b0ff0168dc6d92c09ff8684d28210805d.tar.gz
+
+saving layer sha256:91c43422d24e22cf3350fe6fc2bd2d9b0ff0168dc6d92c09ff8684d28210805d done
+pulling layer bfc5f30ae528630a7dabddaf9ed76026d5f40ec3a0567c549b7ae09880a4dfd6.tar.gz
+
+saving layer sha256:bfc5f30ae528630a7dabddaf9ed76026d5f40ec3a0567c549b7ae09880a4dfd6 done
+=== distro: void (ID=void)
+SSL certificate subject doesn't match host alpha.de.repo.voidlinux.org
+ERROR: [reposync] failed to fetch file `https://alpha.de.repo.voidlinux.org/current/musl/x86_64-musl-repodata': Operation not permitted
+[rc=0]
+### captured: 2026-09-07T12:12:17Z
+$ sh /workspace/poc/poc5-generic.sh voidlinux/voidlinux-musl:latest void
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: void (ID=void)
+The 'xbps' package must be updated, please run `xbps-install -u xbps`
+[rc=0]
+### captured: 2026-09-07T12:14:44Z
+$ sh /workspace/poc/poc5-generic.sh voidlinux/voidlinux-musl:latest void
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: void (ID=void)
+=== fixups: mirror pinned to repo-default.voidlinux.org, host CA bundle
+=== toolchain: gcc (GCC) 14.2.1 20250405
+void: square(6)=36
+exit=42 (expect 42)
+make: *** No rule to make target 'clean'.  Stop.
+[rc=0]
+### captured: 2026-09-07T12:15:49Z
+$ sh /workspace/poc/poc5-generic.sh voidlinux/voidlinux-musl:latest void
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: void (ID=void)
+=== fixups: mirror pinned to repo-default.voidlinux.org, host CA bundle
+=== toolchain: gcc (GCC) 14.2.1 20250405
+void: square(6)=36
+exit=42 (expect 42)
+void static: square(6)=36
+static exit=42 (expect 42)
+DISTRO-OK
+[rc=0]

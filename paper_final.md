@@ -446,7 +446,7 @@ An adaptation that replaces lilipod's namespace machinery with `chroot(2)` is
 reported to support `pull`, `run`, `create`, detached `start`, `ps`, `stop`, `rm`,
 `logs` and copy-in volumes, while `exec` and PTY allocation remained broken. **[R]**
 The v1 patch was unpublished at review time; **as of 2026-09-07 the v2 patch is
-published** (`patches/lilipod-restricted-v2.diff`, 302 insertions across 5 files)
+published** (`patches/lilipod-restricted-v2.diff`, 532 insertions across 5 files; v2.2 adds per-layer OCI whiteout application, v2.3 adopts docker's always-install-host-resolv.conf semantics)
 and its lifecycle results are reproduced on the target
 (`verification/real/lilipod-v2-lifecycle.txt`): with the v2 corrections below,
 `exec` **works**, and per-container hostnames work through `clone(CLONE_NEWUTS)`.
@@ -774,6 +774,33 @@ This substantiates the claim that signed package installation from live reposito
 works — with the preconditions stated, and with the mechanism named. Availability of
 `getrandom(2)` is *not* the reason it works; TLS and signature verification are
 separate concerns, and the failure mode above was neither.
+
+**Ten distros, one harness (2026-09-07).** The target now carries ten
+end-to-end PoCs (`verification/real/poc-note.md`, captures `poc*.txt`): alpine,
+debian, almalinux, arch, void-musl, ubuntu 26.04, opensuse leap 16.0,
+rockylinux 9, rockylinux 9-minimal and fedora 44, each installing a C toolchain
+through its native package manager and building+running a project. The matrix
+of fixups is itself a finding:
+
+| Manager | Fixup required | Status |
+|---|---|---|
+| apk | none | works |
+| apt/dpkg (debian, ubuntu) | https sources, host CA, `APT::Sandbox::User=root` | works |
+| dnf (almalinux) | epel-release in a separate transaction | works |
+| microdnf / dnf5 (rocky-minimal, fedora) | host resolv.conf (image bakes `192.168.122.1`) | works |
+| pacman (arch) | comment `DownloadUser = alpm` | works |
+| xbps (void-musl) | pin mirror, host CA, **OCI whiteout handling** | works |
+| zypper (leap) | http→https in the **RIS index** — zypper regenerates `repos.d` from `/usr/share/zypp/local/service/`, overwriting naive seds | works |
+
+Three of these generalize beyond the distro: **(a)** plain `tar -x` ignores
+OCI `.wh.` whiteouts, and void's image ships a self-referential
+`/var/cache/xbps` symlink that a later layer whiteouts — without whiteout
+processing, xbps dies with `Symbolic link loop` (§10.4's requirement now has a
+live failure case; the adaptation gained `ApplyOCIWhiteouts`). **(b)** images
+bake unreachable resolvers (rocky: the libvirt NAT gateway `192.168.122.1`);
+docker semantics — never use the image's resolv.conf — subsume both this and
+the empty-placeholder case. **(c)** every repo-protocol fixup traces to the
+same tcp/80 egress failure.
 
 **Reconciled with the reported payload (2026-09-07).** The reported runimage
 rootfs's `pacman.conf` ships with **`CheckSpace` enabled and no `DownloadUser`

@@ -1,0 +1,34 @@
+### captured: 2026-09-07T12:17:38Z
+$ sh /workspace/poc/poc5-generic.sh opensuse/leap:latest opensuse
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+pulling layer 6ffa3bff0e88f6ed1e1a320b3029963392b6f1dcb58352c2041929e1f675d1be.tar.gz
+
+saving layer sha256:6ffa3bff0e88f6ed1e1a320b3029963392b6f1dcb58352c2041929e1f675d1be done
+=== distro: openSUSE Leap 16.0 (ID=opensuse-leap)
+[rc=0]
+### captured: 2026-09-07T12:18:48Z
+$ sh /workspace/poc/poc5-generic.sh opensuse/leap:latest opensuse
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: openSUSE Leap 16.0 (ID=opensuse-leap)
+[rc=0]
+### captured: 2026-09-07T12:19:09Z
+$ sh /workspace/poc/poc5-generic.sh opensuse/leap:latest opensuse
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: openSUSE Leap 16.0 (ID=opensuse-leap)
+No provider of 'gcc' found.
+=== fixups: http->https repos (if any), gpg auto-import
+/src/build.sh: line 46: gcc: command not found
+=== toolchain: 
+/src/build.sh: line 70: make: command not found
+[rc=0]
+### captured: 2026-09-07T12:23:44Z
+$ sh /workspace/poc/poc5-generic.sh opensuse/leap:latest opensuse
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: openSUSE Leap 16.0 (ID=opensuse-leap)
+Running post-transaction scripts [....done]
+=== fixups: http->https in RIS index+services+repos (zypper regenerates repos.d from /usr/share/zypp/local/service), gpg auto-import
+=== toolchain: gcc (SUSE Linux) 15.2.0
+openSUSE Leap 16.0: square(6)=36
+exit=42 (expect 42)
+DISTRO-OK
+[rc=0]

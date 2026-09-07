@@ -1,51 +1,46 @@
 # Build-in-container PoCs on the target (2026-09-07)
 
-Two end-to-end proofs that image-derived userspaces on this runtime can compile real
-software, using the published lilipod v2.1 patch:
+Ten distro images, end-to-end, via the published lilipod v2 patch
+(`patches/lilipod-restricted-v2.diff`). PoCs 1-4 use bespoke scripts
+(`poc1-build.sh`, `poc2-build.sh`, `poc3-run.sh`, `poc4-build.sh`); PoCs 5-10 use
+one distro-detecting harness (`poc5-build.sh`) that applies per-package-manager
+fixups, installs a C toolchain, and builds+runs a two-file make project
+(expected exit 42; musl distros additionally build `-static`).
 
-1. **Alpine -> static musl binary** (`poc1-alpine.txt`, `poc1-build.sh`):
-   `apk add build-base` inside the chroot, `cc -static` hello world; the artifact
-   is a fully static PIE (no PT_INTERP), runs on the host, returns the expected
-   exit code 42.
+| # | Image | Package manager | Fixups required | Result |
+|---|---|---|---|---|
+| 1 | alpine:latest | apk | none | `cc -static` -> static-pie musl binary, no PT_INTERP, runs on host, exit 42 |
+| 2 | debian:bookworm-slim | apt/dpkg | https sources + host CA + `APT::Sandbox::User=root` | curl 8.22.0 built from source (OpenSSL/3.0.20, nghttp2), fetches https://example.com |
+| 3 | almalinux:9 | dnf | epel-release in a separate transaction | fastfetch 2.66.0 runs (sysinfo/netlink//etc sources; shows the shared host kernel) |
+| 4 | archlinux:base-devel | pacman | comment `DownloadUser = alpm` (unmapped-uid chown) | cmake 4.4.3 builds fmtlib/fmt @ HEAD; program links against libfmt.a, exit 7 |
+| 5 | voidlinux/voidlinux-musl | xbps | pin mirror to repo-default.voidlinux.org + host CA; **OCI whiteout handling** (see below) | dynamic + `-static` musl builds, exit 42 |
+| 6 | ubuntu:latest (26.04) | apt/dpkg | https sources + host CA + `Sandbox::User=root` | build-essential -> make project, exit 42 |
+| 7 | opensuse/leap:16.0 | zypper | http->https in the **RIS index** (`/usr/share/zypp/local/service/`), services, repos.d — zypper regenerates repos.d from the index on refresh, overwriting naive seds | gcc 15.2.0 -> make project, exit 42 |
+| 8 | rockylinux:9 | dnf | **host resolv.conf** (image ships a baked `nameserver 192.168.122.1`, the libvirt NAT gateway) | gcc 11.5.0 -> make project, exit 42 |
+| 9 | rockylinux:9-minimal | microdnf | host resolv.conf (as above) | gcc 11.5.0 -> make project, exit 42 |
+| 10 | fedora:latest (44) | dnf5 | host resolv.conf (as above) | gcc 16.2.1 -> make project, exit 42 |
 
-2. **Debian bookworm-slim -> curl from source** (`poc2-debian.txt`, `poc2-build.sh`):
-   `apt-get install build-essential libssl-dev ...` (dpkg logs chown warnings for
-   unmapped owners but proceeds), fetch curl-8.22.0, configure with OpenSSL +
-   nghttp2, `make -j`, and the freshly built curl fetches `https://example.com`.
+## New runtime findings from the extension
 
-Runtime-specific workarounds encoded in the scripts:
-
-- plain-HTTP egress (tcp/80) from the sandbox returns garbage: Debian sources are
-  switched to https, with the host CA bundle copied in via the volume;
-- `APT::Sandbox::User=root` (the `_apt` drop fails on unmapped ids);
-- lilipod v2.1 provides a regular-file `/dev/null` shim (mknod denied);
-- v2.1 also drops `CLONE_NEWNET` & friends in restricted mode: on this runtime
-  those clones *succeed* and yield an empty network namespace, which silently
-  broke all container networking (`ENETUNREACH`) — a concrete instance of the
-  clone-vs-unshare asymmetry (paper §3.4) biting real tooling.
-
-## Extended set (2026-09-07, later the same day)
-
-3. **AlmaLinux 9 -> fastfetch** (`poc3-almalinux.txt`, `poc3-run.sh`): dnf +
-   EPEL (two transactions — epel-release first), fastfetch 2.66.0 runs and
-   reports OS/kernel/uptime/packages/interface via `sysinfo(2)`, netlink and
-   `/etc` — no `/proc` needed. It truthfully shows the *host* kernel and IP.
-
-4. **Arch Linux -> CMake project** (`poc4-arch.txt`, `poc4-build.sh`): pacman's
-   shipped `DownloadUser = alpm` hits the unmapped-gid chown wall exactly as the
-   model's §8.3 predicted (reproduced on the real image); after commenting it
-   out, `pacman -S cmake git`, then `fmtlib/fmt` at HEAD: cmake 4.4.3 configure
-   + build + a program linked against `libfmt.a` that runs and returns the
-   expected exit code.
-
-Additional target facts settled while extending:
-
-- `umount2` is denied (EPERM) like mount — the filter list in paper §3.2 is now
-  target-verified item by item (`probe-census.txt`).
-- podman 5.8.2 on the target dies at init with a bare `no such file or
-  directory` even with `--storage-driver vfs --root/--runroot`
-  (`podman-vfs-target.txt`): the corpus §6 "vfs initializes" result is
-  model-only (podman 4.3.1 there); the paper's layer-apply cascade is unchanged.
-- Images that ship an empty `/etc/resolv.conf` placeholder (AlmaLinux) get no
-  DNS until the host resolver is installed; lilipod v2.1 now copies the host
-  resolv.conf unless a `nameserver` line already exists.
+- **OCI whiteouts are load-bearing** (void): the image's layer 1 ships a
+  self-referential `/var/cache/xbps -> /var/cache/xbps` symlink; layer 2 deletes
+  it with a `.wh.xbps` marker. Plain `tar -x` ignores whiteouts, leaving the
+  loop in place — `xbps` then dies with `failed to change dir to cachedir:
+  Symbolic link loop`. lilipod v2.2 gained `ApplyOCIWhiteouts` (paper §10.4's
+  requirement, now with a live failure case). `.wh..wh..opq` is noted-and-
+  dropped: sequential extraction has no lower layer to hide.
+- **Zypper's RIS index regenerates repos.d** (leap): seds on `/etc/zypp/repos.d`
+  are overwritten by `refresh-services` from
+  `/usr/share/zypp/local/service/openSUSE/repo/*.xml`; the fixup must target the
+  index first, then services, then repos.d.
+- **Images bake unreachable resolvers** (rocky family, likely others): a
+  `nameserver 192.168.122.1` line is a build-host artifact. Docker never uses
+  the image's resolv.conf; lilipod v2.3 adopts the same semantics (always
+  install the host's), which also covers the empty-placeholder case (AlmaLinux).
+- **tcp/80 egress remains the invariant** behind every repo-protocol fixup
+  (debian/ubuntu sources, leap RIS, void mirror); https + a real CA bundle
+  resolves all of them. Void's `alpha.de` mirror also serves a mismatched
+  certificate subject from this network — pinning to `repo-default` fixes it.
+- **dpkg/rpm/xbps chown failures remain warnings**; none of the ten distros
+  hit a fatal ownership wall at install time once extraction was
+  ownership-neutral.

@@ -1,0 +1,14 @@
+### captured: 2026-09-07T12:34:50Z
+$ sh /workspace/poc/poc5-generic.sh fedora:latest fedora
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+pulling layer 59259e167f1330a2378d204c639ab48759f9d49f292cf10905abc5ac474bc6c4.tar.gz
+
+saving layer sha256:59259e167f1330a2378d204c639ab48759f9d49f292cf10905abc5ac474bc6c4 done
+=== distro: Fedora Linux 44 (Container Image) (ID=fedora)
+Complete!
+=== fixups: none (microdnf)
+=== toolchain: gcc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)
+Fedora Linux 44 (Container Image): square(6)=36
+exit=42 (expect 42)
+DISTRO-OK
+[rc=0]

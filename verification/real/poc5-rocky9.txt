@@ -1,0 +1,40 @@
+### captured: 2026-09-07T12:25:02Z
+$ sh /workspace/poc/poc5-generic.sh rockylinux:9 rocky9
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+pulling layer 446f83f14b236772583d069e6f46a75e7e5456add656d1415a452618189fb825.tar.gz
+
+saving layer sha256:446f83f14b236772583d069e6f46a75e7e5456add656d1415a452618189fb825 done
+=== distro: Rocky Linux 9.3 (Blue Onyx) (ID=rocky)
+unknown distro ID=rocky
+[rc=0]
+### captured: 2026-09-07T12:25:48Z
+$ sh /workspace/poc/poc5-generic.sh rockylinux:9 rocky9
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: Rocky Linux 9.3 (Blue Onyx) (ID=rocky)
+Error: Failed to download metadata for repo 'baseos': Cannot prepare internal mirrorlist: Curl error (6): Couldn't resolve host name for https://mirrors.rockylinux.org/mirrorlist?arch=x86_64&repo=BaseOS-9 [Could not resolve host: mirrors.rockylinux.org]
+=== fixups: none (dnf)
+/src/build.sh: line 48: gcc: command not found
+=== toolchain: 
+/src/build.sh: line 72: make: command not found
+[rc=0]
+### captured: 2026-09-07T12:28:44Z
+$ sh /workspace/poc/poc5-generic.sh rockylinux:9 rocky9
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: Rocky Linux 9.3 (Blue Onyx) (ID=rocky)
+Error: Failed to download metadata for repo 'baseos': Cannot prepare internal mirrorlist: Curl error (6): Couldn't resolve host name for https://mirrors.rockylinux.org/mirrorlist?arch=x86_64&repo=BaseOS-9 [Could not resolve host: mirrors.rockylinux.org]
+=== fixups: none (dnf; v2.3 installs host resolv.conf - image ships 192.168.122.1)
+/src/build.sh: line 48: gcc: command not found
+=== toolchain: 
+/src/build.sh: line 72: make: command not found
+[rc=0]
+### captured: 2026-09-07T12:31:11Z
+$ sh /workspace/poc/poc5-generic.sh rockylinux:9 rocky9
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: Rocky Linux 9.3 (Blue Onyx) (ID=rocky)
+
+=== fixups: none (dnf; v2.3 installs host resolv.conf - image ships 192.168.122.1)
+=== toolchain: gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14)
+Rocky Linux 9.3 (Blue Onyx): square(6)=36
+exit=42 (expect 42)
+DISTRO-OK
+[rc=0]

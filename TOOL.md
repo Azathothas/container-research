@@ -109,7 +109,7 @@ Result on the target: `pull`, `run`, `create`, `start`, `ps`, `stop`, `rm`,
 `logs`, `exec`, volumes (copy-in), hostnames — all work. PTY allocation does not
 (no `/dev/ptmx` reachable). ~0.1 s warm launch.
 
-### 2.4 The four PoCs (all single-shot, evidence captured)
+### 2.4 The ten PoCs (all single-shot, evidence captured)
 
 Under `verification/real/poc*` (repo) and `/workspace/poc/` (target):
 
@@ -123,6 +123,18 @@ Under `verification/real/poc*` (repo) and `/workspace/poc/` (target):
 4. **Arch Linux → CMake project**: pacman (after `DownloadUser` fixup), cmake
    4.4.3 builds `fmtlib/fmt` at HEAD; test program links against `libfmt.a`
    and runs.
+5. **Six more via one distro-detecting harness** (`poc5-build.sh`, evidence
+   `poc5-*.txt`): voidlinux-musl (xbps — dynamic **and** `-static` musl
+   builds), ubuntu 26.04, opensuse leap 16.0, rockylinux 9,
+   rockylinux 9-minimal (microdnf) and fedora 44 (dnf5) — each installs a C
+   toolchain and builds+runs a two-file make project. The per-manager fixup
+   matrix is in `poc-note.md` and paper §8.3; three findings generalize:
+   OCI **whiteouts are load-bearing** (void ships a `/var/cache/xbps`
+   self-loop that a later layer whiteouts — plain tar leaves the loop; v2.2
+   gained `ApplyOCIWhiteouts`), **zypper regenerates repos.d from its RIS
+   index** (fixups must sed `/usr/share/zypp/local/service/` first), and
+   **images bake unreachable resolvers** (rocky: `192.168.122.1` — v2.3
+   adopts docker's always-install-host-resolv.conf semantics).
 
 Package-manager-specific fixes encoded by the PoCs (see `poc-note.md`): pacman
 `DownloadUser=alpm` chowns to an unmapped uid (comment it out); apt's `_apt`
@@ -139,7 +151,7 @@ kernel magic; nothing here conjures privileges. The product *is* the pile of
 scripts — probed, tested, and wearing docker's face. "Why not just chroot?"
 therefore reduces to four advantages vanilla `chroot` structurally cannot provide:
 
-| | `chroot rootfs/ cmd` | dokra (this spec) |
+| | `chroot rootfs/ cmd` | podbox (this spec) |
 |---|---|---|
 | **Interface** | bespoke script per use, nothing reusable | docker/podman verbs, flags, exit codes — existing CI, scripts and agent habits work unmodified (§5.1) |
 | **Images** | bring your own rootfs, by hand | `pull`/`push`/`save`/`load` against any OCI registry; layered extraction that survives the chown wall (ownership sidecar); tags, manifests, store |
@@ -150,7 +162,7 @@ Secondary gains: reproducible in-container toolchains (PoCs 1–4 become one
 `docker run`-shaped command each), and single-file distribution (static binary,
 onelf-packable with an embedded rootfs).
 
-One sentence: **chroot is a syscall; dokra is the missing container userland
+One sentence: **chroot is a syscall; podbox is the missing container userland
 around it, speaking the only container language most agents know.** Where it
 cannot beat chroot — kernel isolation — it says so out loud; §6 is the price of
 not having this layer.
@@ -201,7 +213,7 @@ concrete plan; none requires privileges we do not have.
 
 ## 5. SPEC: a drop-in `docker`/`podman` CLI for confined runtimes
 
-**Working name: `dokra`** (any name works; it must answer to `docker` and
+**Working name: `podbox`** (any name works; it must answer to `docker` and
 `podman` on PATH for drop-in behavior). One static Go binary (memfd-eligible,
 onelf-packable), zero external dependencies, seeded by the lilipod v2 patch.
 
@@ -218,12 +230,12 @@ On first run (cached in `$store/probe.json`), run the §10.2 probe set in
 disposable children; print the mode banner to stderr once:
 
 ```
-dokra 0.1: mode=chroot (namespaces: uts-only; mounts: none; devices: shimmed;
+podbox 0.1: mode=chroot (namespaces: uts-only; mounts: none; devices: shimmed;
 ownership: virtualized+sidecar; network: host-shared; pids: host-shared)
 probes: clone(NEWNS)=ok mount=EPERM clone(NEWUTS)=ok sethostname=ok chroot=ok
 ```
 
-If real namespaces+mounts are available (normal host), dokra uses them and is
+If real namespaces+mounts are available (normal host), podbox uses them and is
 indistinguishable from a normal runtime. The ladder: namespaces → chroot →
 interpose → `unsupported <reason>`.
 
@@ -300,8 +312,8 @@ Statuses (spec; PoC-proven items are marked):
 
 ### 5.4 The environment-completion layer (the "it just works" core)
 
-Before any payload runs, dokra *prepares the rootfs* — generalizing every fixup
-the four PoCs needed, derived from image + distro detection, no user action:
+Before any payload runs, podbox *prepares the rootfs* — generalizing every fixup
+the ten PoCs needed, derived from image + distro detection, no user action:
 
 - `/dev/null` regular-file shim; `/dev/zero`, `/dev/urandom` pre-filled files;
   `/dev/tty` → passed-in fd symlink where possible.
@@ -323,7 +335,7 @@ the four PoCs needed, derived from image + distro detection, no user action:
 - Classification at `run` time: ELF `PT_INTERP` present → interposable; absent →
   static (runs, not virtualizable); Go markers → same as static (paper §9.3,
   verified on target: `LD_PRELOAD` never sees Go `lchown`, cgo or not).
-- The **interposer** (libc-agnostic `.so`, no `DT_NEEDED`) is dokra's answer for
+- The **interposer** (libc-agnostic `.so`, no `DT_NEEDED`) is podbox's answer for
   C payloads that need more than chroot gives: path rewrite into the rootfs for
   `open*/stat*/execve/chdir`, `chown/lchown/fchown` → success + sidecar record,
   `setuid/setgid/setgroups` → success + identity memo (`getuid` family report
@@ -346,7 +358,7 @@ the four PoCs needed, derived from image + distro detection, no user action:
 
 ### 5.7 Acceptance tests
 
-The four PoCs become CI (`tests/`): pull+build each distro image, run the PoC
+The ten PoCs become CI (`tests/`): pull+build each distro image, run the PoC
 script, assert markers (`BUILD-OK`, exit codes, `PT_INTERP` absence for the musl
 artifact). Plus: `docker run --rm alpine echo hi` must succeed with **zero
 non-docker knowledge** — that is the product requirement this whole document
@@ -391,6 +403,9 @@ For running tools we cannot patch (their Go cores issue raw syscalls):
 | `failed to chown temporary download directory` (pacman) | `DownloadUser = alpm` unmapped | comment it out |
 | apt `Method http has died` / `no Release file` | tcp/80 egress broken in this sandbox | https sources + CA |
 | `getpwuid(0)` fails / `unknown userid 0` | no `/etc/passwd` on host | synthesize one in chroots you build |
+| `failed to change dir to cachedir: Symbolic link loop` (xbps) | a later OCI layer whiteouts an earlier layer's self-referential symlink; plain tar ignores `.wh.*` | apply whiteouts after each layer (v2.2 `ApplyOCIWhiteouts`) |
+| zypper fixups don't stick (http again after refresh) | RIS index service regenerates repos.d from `/usr/share/zypp/local/service/` | sed the index, refresh-services, then repos.d |
+| dnf "Couldn't resolve host mirrors.*" although resolv.conf looks fine | image bakes a build-host resolver (rocky: `192.168.122.1`) | install the host resolv.conf (docker semantics, v2.3) |
 
 ---
 

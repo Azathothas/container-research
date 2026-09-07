@@ -1,5 +1,5 @@
 diff --git a/pkg/containerutils/container_utils.go b/pkg/containerutils/container_utils.go
-index 41b4f3d..51c797a 100644
+index 41b4f3d..4898fea 100644
 --- a/pkg/containerutils/container_utils.go
 +++ b/pkg/containerutils/container_utils.go
 @@ -25,6 +25,7 @@ import (
@@ -10,7 +10,21 @@ index 41b4f3d..51c797a 100644
  	"github.com/89luca89/lilipod/pkg/utils"
  	"github.com/google/go-containerregistry/pkg/legacy"
  	v1 "github.com/google/go-containerregistry/pkg/v1"
-@@ -574,45 +575,69 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
+@@ -223,6 +224,13 @@ func CreateRootfs(image string, name string, createConfig utils.Config, uid, gid
+ 		if err != nil {
+ 			return err
+ 		}
++
++		// A layer may delete paths shipped by earlier layers via ".wh.*"
++		// markers; apply them after each layer so later layers extract on
++		// the intended tree.
++		if err := fileutils.ApplyOCIWhiteouts(containerDIR); err != nil {
++			logging.LogWarning("could not apply layer whiteouts: %v", err)
++		}
+ 	}
+ 
+ 	logging.LogDebug("populating default config.json")
+@@ -574,45 +582,69 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
  		"enter",
  		"--config", string(configArg))
  
@@ -100,7 +114,7 @@ index 41b4f3d..51c797a 100644
  		os.Getenv("ROOTFUL") != constants.TrueString {
  		logging.LogDebug("setting up uidmaps")
  
-@@ -652,6 +677,44 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
+@@ -652,6 +684,44 @@ func generateEnterCommand(config utils.Config) (*exec.Cmd, error) {
  //	nsenter -m -u -U --preserve-credentials -i -n -p -S 1000 -G 1000 \
  //	    -r/proc/11111/root -w/proc/11111/root/tmp/ -t 11111 command-to-run
  func generateExecCommand(containerPid string, tty bool, config utils.Config) *exec.Cmd {
@@ -146,18 +160,10 @@ index 41b4f3d..51c797a 100644
  
  	if config.Ipc == constants.Private {
 diff --git a/pkg/containerutils/rootfs_utils.go b/pkg/containerutils/rootfs_utils.go
-index b21926d..6fd3c45 100644
+index b21926d..67c5fab 100644
 --- a/pkg/containerutils/rootfs_utils.go
 +++ b/pkg/containerutils/rootfs_utils.go
-@@ -3,6 +3,7 @@
- package containerutils
- 
- import (
-+	"bytes"
- 	"fmt"
- 	"os"
- 	"os/exec"
-@@ -15,6 +16,7 @@ import (
+@@ -15,6 +15,7 @@ import (
  	"github.com/89luca89/lilipod/pkg/imageutils"
  	"github.com/89luca89/lilipod/pkg/logging"
  	"github.com/89luca89/lilipod/pkg/procutils"
@@ -165,7 +171,7 @@ index b21926d..6fd3c45 100644
  	"github.com/89luca89/lilipod/pkg/utils"
  	"github.com/moby/sys/capability"
  )
-@@ -471,10 +473,197 @@ func setupVolumes(path string, conf utils.Config) error {
+@@ -471,10 +472,196 @@ func setupVolumes(path string, conf utils.Config) error {
  	return nil
  }
  
@@ -197,15 +203,14 @@ index b21926d..6fd3c45 100644
 +	// already carry one: a host resolv.conf pointing at a loopback resolver
 +	// (eg. 127.0.0.53) is unusable from inside the container, and the
 +	// operator may have installed a working one.
-+	if existing, rerr := fileutils.ReadFile(filepath.Join(path, "etc", "resolv.conf")); rerr != nil ||
-+		!bytes.Contains(existing, []byte("nameserver")) {
-+		// no resolv.conf at all, or one without a nameserver (images often
-+		// ship an empty placeholder): install the host's.
-+		if hostResolv, herr := fileutils.ReadFile("/etc/resolv.conf"); herr == nil {
-+			if werr := fileutils.WriteFile(
-+				filepath.Join(path, "etc", "resolv.conf"), hostResolv, 0o644); werr != nil {
-+				logging.LogWarning("restricted runtime: could not set up resolv.conf: %v", werr)
-+			}
++	// Docker semantics: the image's resolv.conf is never used — the runtime
++	// installs its own. Images ship placeholders (AlmaLinux: empty) or
++	// build-time artifacts (Rocky: "nameserver 192.168.122.1", the libvirt
++	// NAT gateway) that are unreachable here. Always install the host's.
++	if hostResolv, herr := fileutils.ReadFile("/etc/resolv.conf"); herr == nil {
++		if werr := fileutils.WriteFile(
++			filepath.Join(path, "etc", "resolv.conf"), hostResolv, 0o644); werr != nil {
++			logging.LogWarning("restricted runtime: could not set up resolv.conf: %v", werr)
 +		}
 +	}
 +
@@ -363,7 +368,7 @@ index b21926d..6fd3c45 100644
  	// this section will make sure that mounts are private in this mount
  	// namespace, so that even with root we do not have pending mounts.
  	logging.LogDebug("remounting %s as private", path)
-@@ -647,15 +836,43 @@ func RunContainer(tty bool, conf utils.Config) error {
+@@ -647,15 +834,43 @@ func RunContainer(tty bool, conf utils.Config) error {
  		return fmt.Errorf("setup rootfs: %w", err)
  	}
  
@@ -412,7 +417,7 @@ index b21926d..6fd3c45 100644
  		err = setupCgroupfs(conf)
  		if err != nil {
  			logging.LogDebug("error: %+v", err)
-@@ -676,11 +893,18 @@ func RunContainer(tty bool, conf utils.Config) error {
+@@ -676,11 +891,18 @@ func RunContainer(tty bool, conf utils.Config) error {
  	logging.LogDebug("setting container hostname to %s", conf.Hostname)
  
  	// then we set up the hostname.
@@ -435,7 +440,7 @@ index b21926d..6fd3c45 100644
  	}
  
  	logging.LogDebug("become user: %s", conf.User)
-@@ -724,9 +948,11 @@ func RunContainer(tty bool, conf utils.Config) error {
+@@ -724,9 +946,11 @@ func RunContainer(tty bool, conf utils.Config) error {
  		return err
  	}
  
@@ -451,7 +456,7 @@ index b21926d..6fd3c45 100644
  
  	if tty {
 diff --git a/pkg/fileutils/file_utils.go b/pkg/fileutils/file_utils.go
-index fb50b8f..5881402 100644
+index fb50b8f..14fed6f 100644
 --- a/pkg/fileutils/file_utils.go
 +++ b/pkg/fileutils/file_utils.go
 @@ -16,6 +16,7 @@ import (
@@ -462,7 +467,50 @@ index fb50b8f..5881402 100644
  )
  
  // ReadFile will return the content of input file or error.
-@@ -405,8 +406,17 @@ func UntarFile(path string, target string, userns string) error {
+@@ -392,6 +393,42 @@ func MountBindRO(src, dest string) error {
+ 			syscall.MS_NOEXEC|syscall.MS_NODEV|syscall.MS_PRIVATE)
+ }
+ 
++// ApplyOCIWhiteouts interprets OCI layer whiteout markers (".wh.<name>")
++// inside dir: each marker deletes the sibling entry it names, then the marker
++// itself is removed. ".wh..wh..opq" (opaque dir) markers are removed with a
++// warning: with sequential extraction into one tree there is no lower layer
++// to hide, so opaque semantics cannot apply.
++//
++// Without this, images that delete a path in a later layer (eg voidlinux
++// deleting a self-referential /var/cache/xbps symlink shipped in an earlier
++// one) keep the deleted entry, and literal ".wh.*" files leak into the rootfs.
++func ApplyOCIWhiteouts(dir string) error {
++	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
++		if err != nil {
++			return nil // best effort
++		}
++
++		name := info.Name()
++		if !strings.HasPrefix(name, ".wh.") {
++			return nil
++		}
++
++		if name == ".wh..wh..opq" {
++			logging.LogWarning("whiteout: opaque marker %s ignored (sequential extraction)", path)
++			_ = os.Remove(path)
++			return nil
++		}
++
++		target := filepath.Join(filepath.Dir(path), strings.TrimPrefix(name, ".wh."))
++		if err := os.RemoveAll(target); err != nil {
++			logging.LogWarning("whiteout: could not remove %s: %v", target, err)
++		}
++		_ = os.Remove(path)
++		logging.LogDebug("whiteout: applied %s -> removed %s", name, target)
++		return nil
++	})
++}
++
+ // UntarFile will untar target file to target directory.
+ // If userns is specified and it is keep-id, it will perform the
+ // untarring in a new user namespace with user id maps set, in order to prevent
+@@ -405,8 +442,17 @@ func UntarFile(path string, target string, userns string) error {
  		return err
  	}
  
@@ -509,3 +557,157 @@ index ee195a2..6825898 100644
  	// As files can be owned by root or fake roots, let's run either as root or
  	// with rootless-helper
  	if os.Getuid() == 0 &&
+diff --git a/pkg/sandbox/restricted.go b/pkg/sandbox/restricted.go
+new file mode 100644
+index 0000000..faf8a17
+--- /dev/null
++++ b/pkg/sandbox/restricted.go
+@@ -0,0 +1,148 @@
++// Package sandbox probes, once and in disposable children, what the current
++// runtime actually permits. It follows the probe protocol of the container-research
++// corpus (verification/README.md):
++//
++//   - probe the operation you need, never the privilege that usually implies it
++//   - run every probe in a disposable child (a success must not mutate the prober)
++//   - record the verdict and use it; never infer one probe from another
++//
++// lilipod's restricted mode needs two facts:
++//
++//   - MountAvailable: can a child that holds a fresh mount namespace (obtained by
++//     clone(2), which this class of runtimes permits even while unshare(2) is
++//     denied) perform a mount in it? If not, lilipod's pivot_root + bind-mount
++//     container setup is impossible and the plain-chroot fallback is used.
++//   - UTSAvailable: can a child in a fresh UTS namespace set its hostname? If so,
++//     container hostnames work even in restricted mode.
++//
++// Both probes re-exec this binary; the marker arguments below are internal.
++package sandbox
++
++import (
++	"os"
++	"os/exec"
++	"sync"
++	"syscall"
++
++	"github.com/89luca89/lilipod/pkg/logging"
++)
++
++var (
++	once          sync.Once
++	mountOK       bool
++	utsOK         bool
++	restrictedVal bool
++)
++
++// mountProbeChild is executed in the disposable child: it already holds a new
++// mount namespace (spawned with CLONE_NEWNS); try to mount a tmpfs.
++func mountProbeChild() {
++	dir, err := os.MkdirTemp("", "lilipod-mountprobe")
++	if err != nil {
++		os.Exit(3)
++	}
++
++	err = syscall.Mount("none", dir, "tmpfs", 0, "")
++	if err != nil {
++		_ = syscall.Unmount(dir, syscall.MNT_DETACH)
++		os.Exit(1)
++	}
++
++	_ = syscall.Unmount(dir, syscall.MNT_DETACH)
++	os.Exit(0)
++}
++
++// utsProbeChild is executed in the disposable child: it already holds a new UTS
++// namespace (spawned with CLONE_NEWUTS); try to set the hostname.
++func utsProbeChild() {
++	err := syscall.Sethostname([]byte("lilipod-probe"))
++	if err != nil {
++		os.Exit(1)
++	}
++
++	os.Exit(0)
++}
++
++// init intercepts the internal marker arguments before cobra (or anything
++// else in main) can reject them: the probe children re-exec this very binary.
++func init() {
++	if len(os.Args) > 2 && os.Args[1] == "sandbox-probe" {
++		switch os.Args[2] {
++		case "mount":
++			mountProbeChild()
++		case "uts":
++			utsProbeChild()
++		}
++
++		os.Exit(2)
++	}
++}
++
++func probe() {
++	once.Do(func() {
++		if os.Getuid() != 0 {
++			// unprivileged users keep lilipod's rootless-helper path.
++			return
++		}
++
++		mountOK = probeSpawn(syscall.CLONE_NEWNS, "mount") == nil
++		utsOK = probeSpawn(syscall.CLONE_NEWUTS, "uts") == nil
++
++		restrictedVal = !mountOK
++
++		if restrictedVal {
++			logging.LogWarning(
++				"restricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot")
++		}
++	})
++}
++
++// probeSpawn re-execs this binary in a child created with the given clone flags.
++// The child exits non-zero if the operation under test fails, so cmd.Run()'s
++// error is the verdict. The child is disposable: neither its namespace nor its
++// hostname change can leak back into this process.
++func probeSpawn(flags uintptr, what string) error {
++	cmd := exec.Command(os.Args[0], "sandbox-probe", what)
++	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: flags}
++
++	return cmd.Run()
++}
++
++// MountAvailable reports whether mount(2) works inside a fresh mount namespace
++// obtained through clone(2). Probed once in a disposable child.
++func MountAvailable() bool {
++	probe()
++
++	return mountOK
++}
++
++// UTSAvailable reports whether sethostname(2) works inside a fresh UTS namespace
++// obtained through clone(2). Probed once in a disposable child.
++func UTSAvailable() bool {
++	probe()
++
++	return utsOK
++}
++
++// Restricted reports whether lilipod's namespace-and-mount container setup is
++// impossible here and the plain-chroot fallback must be used.
++func Restricted() bool {
++	probe()
++
++	return restrictedVal
++}
++
++// SpawnFlags returns the clone flags lilipod should use for its container
++// processes in the current runtime. In restricted mode only capabilities that
++// were positively probed are kept (currently CLONE_NEWUTS for hostnames).
++func SpawnFlags() uintptr {
++	if !Restricted() {
++		return syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS
++	}
++
++	if UTSAvailable() {
++		return syscall.CLONE_NEWUTS
++	}
++
++	return 0
++}

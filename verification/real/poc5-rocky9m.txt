@@ -1,0 +1,20 @@
+### captured: 2026-09-07T12:25:18Z
+$ sh /workspace/poc/poc5-generic.sh rockylinux:9-minimal rocky9m
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+pulling layer 8ec988941d6694de13ed8cb1505c0eb38bf3777bab0acc157ff18974d7350470.tar.gz
+
+saving layer sha256:8ec988941d6694de13ed8cb1505c0eb38bf3777bab0acc157ff18974d7350470 done
+=== distro: Rocky Linux 9.3 (Blue Onyx) (ID=rocky)
+unknown distro ID=rocky
+[rc=0]
+### captured: 2026-09-07T12:31:59Z
+$ sh /workspace/poc/poc5-generic.sh rockylinux:9-minimal rocky9m
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+=== distro: Rocky Linux 9.3 (Blue Onyx) (ID=rocky)
+Complete.
+=== fixups: none (microdnf)
+=== toolchain: gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14)
+Rocky Linux 9.3 (Blue Onyx): square(6)=36
+exit=42 (expect 42)
+DISTRO-OK
+[rc=0]

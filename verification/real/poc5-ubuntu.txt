@@ -1,0 +1,17 @@
+### captured: 2026-09-07T12:17:07Z
+$ sh /workspace/poc/poc5-generic.sh ubuntu:latest ubuntu
+restricted.go:94 [1;33m[warn] [0;0mrestricted runtime detected: mount unavailable even in a private mount namespace (unshare/clone probe); falling back to plain chroot
+pulling layer 06e9d71331fb2b620a4f6c8064e0f84b284bb69a42c7c57b1c962bd4a4cdee76.tar.gz
+
+saving layer sha256:06e9d71331fb2b620a4f6c8064e0f84b284bb69a42c7c57b1c962bd4a4cdee76 done
+pulling layer f3db1cd940786339b09d8a60e47c66fea9502d788e6fab5bec91a4a77d4ced1c.tar.gz
+
+saving layer sha256:f3db1cd940786339b09d8a60e47c66fea9502d788e6fab5bec91a4a77d4ced1c done
+=== distro: Ubuntu 26.04 LTS (ID=ubuntu)
+W: chown to root:adm of file /var/log/apt/term.log failed - OpenLog (22: Invalid argument)
+=== fixups: http->https sources, host CA, APT::Sandbox::User=root
+=== toolchain: gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+Ubuntu 26.04 LTS: square(6)=36
+exit=42 (expect 42)
+DISTRO-OK
+[rc=0]
