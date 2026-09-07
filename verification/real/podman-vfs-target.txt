@@ -1,0 +1,4 @@
+### podman vfs-init on TARGET (2026-09-07) — the corpus §6 'vfs initializes' is model-only
+$ podman --root /workspace/podman-vfs-t --runroot ... --storage-driver vfs info
+Error: no such file or directory
+(bare ENOENT; target podman 5.8.2 dies before storage — see paper_final.md §6 for the model's vfs result)

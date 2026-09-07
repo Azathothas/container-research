@@ -1,19 +1,29 @@
-### captured: 2026-09-07T03:08:54Z
+### captured: 2026-09-07T07:06:53Z
 $ L=/workspace/lilipod/lilipod-v2; export LILIPOD_HOME=/workspace/lilipod-store-v2
-$L create --name poc1 --userns host -v /workspace/poc/src1:/src alpine:latest /bin/sh /src/build.sh >/dev/null 2>&1
-$L start poc1 2>&1 | grep -vE 'warn\]'; sleep 45
-$L logs poc1 2>&1 | grep -vE 'warn\]' | sed 's/^[0-9]*:[a-z]*://'
-$L rm poc1 >/dev/null 2>&1
-[rc=0]
-### captured: 2026-09-07T03:15:02Z
-$ L=/workspace/lilipod/lilipod-v2; export LILIPOD_HOME=/workspace/lilipod-store-v2
-$L create --name poc1 --userns host -v /workspace/poc/src1:/src alpine:latest /bin/sh /src/build.sh >/dev/null 2>&1
-$L start poc1 2>/dev/null; sleep 60
-$L logs poc1 2>&1 | grep -vE 'warn\]' | sed 's/^[0-9]*:[a-z]*://'
-ID=$($L inspect poc1 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
-echo '=== artifact out of the store:'
-cp $LILIPOD_HOME/lilipod/containers/$ID/rootfs/out/hello /workspace/poc/hello-musl-static && ls -la /workspace/poc/hello-musl-static
-$L rm poc1 >/dev/null 2>&1
-=== artifact out of the store:
--rwxr-xr-x 1 0 0 88168 Sep  7 03:16 /workspace/poc/hello-musl-static
+$L create --name poc1v --userns host -v /workspace/poc/src1:/src alpine:latest /bin/sh /src/build.sh >/dev/null 2>&1
+$L start poc1v 2>/dev/null
+for i in $(seq 1 40); do sleep 10; $L ps 2>/dev/null | grep -q poc1v || break; done
+sleep 3
+ID=$($L inspect poc1v 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+grep -vE 'warn\]|debug\]' $LILIPOD_HOME/lilipod/containers/$ID/current-logs | sed 's/^[0-9]*:[a-z]*://' | grep -vE '^(OK:|fetch|Building|Installing)' | head -24
+cp $LILIPOD_HOME/lilipod/containers/$ID/rootfs/out/hello /workspace/poc/hello-musl-static
+$L rm poc1v >/dev/null 2>&1
+echo '=== host verification:'
+file /workspace/poc/hello-musl-static | cut -c1-70
+rc=0; /workspace/poc/hello-musl-static || rc=$?
+echo "host-run-exit=$rc (expect 42)"
+=== apk: installing build tools
+Executing busybox-1.37.0-r31.trigger
+=== toolchain:
+cc (Alpine 15.2.0) 15.2.0
+=== building: cc -static
+=== verify inside:
+/out/hello: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), static-pie linked, BuildID[sha1]=e504b5594be5aea0c6db5034649a6d2a20f75aa5, with debug_info, not stripped
+hello from a static musl binary built inside a namespace-less chroot
+run-exit=42 (expect 42)
+BUILD-OK
+=== host verification:
+/workspace/poc/hello-musl-static: ELF 64-bit LSB pie executable, x86-6
+hello from a static musl binary built inside a namespace-less chroot
+host-run-exit=42 (expect 42)
 [rc=0]

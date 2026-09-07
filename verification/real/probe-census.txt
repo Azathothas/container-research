@@ -29,3 +29,6 @@ exec(/tmp/execprobe)               OK
 getrandom                          OK
 write(/etc/probe)                  FAIL errno=13 EACCES
 write into uid-1000-owned dir      FAIL errno=2 ENOENT
+### umount2 probe (2026-09-07)
+$ /tmp/umount2probe (child: umount2("/tmp", 0))
+umount2(/tmp): rc=-1 errno=1 (Operation not permitted)

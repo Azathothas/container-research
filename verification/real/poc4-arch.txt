@@ -1,0 +1,27 @@
+### captured: 2026-09-07T07:05:43Z
+$ L=/workspace/lilipod/lilipod-v2; export LILIPOD_HOME=/workspace/lilipod-store-v2
+$L create --name poc4 --userns host -v /workspace/poc/src4:/src archlinux:base-devel /bin/sh /src/build.sh >/dev/null 2>&1
+$L start poc4 2>/dev/null
+for i in $(seq 1 55); do sleep 15; $L ps 2>/dev/null | grep -q poc4 || break; done
+sleep 3
+ID=$($L inspect poc4 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+grep -vE 'warn\]|debug\]' $LILIPOD_HOME/lilipod/containers/$ID/current-logs | sed 's/^[0-9]*:[a-z]*://' | grep -E '^===|DownloadUser|configure:|artifact:|fmt|exit=|cmake version|gcc|BUILD' | head -20
+cp $LILIPOD_HOME/lilipod/containers/$ID/rootfs/out/libfmt.a /workspace/poc/libfmt-arch-built 2>/dev/null && ls -la /workspace/poc/libfmt-arch-built
+$L rm poc4 >/dev/null 2>&1
+=== os:
+=== pacman: the shipped DownloadUser=alpm chowns to an unmapped uid -> EINVAL
+39:DownloadUser = alpm
+=== toolchain:
+cmake version 4.4.3
+gcc (GCC) 16.2.1 20260810
+=== fetching fmt (cmake project under test)
+fmt @ 2d4d8a1 (2026-09-06)
+=== cmake configure + build
+configure: 1
+artifact: -rw-r--r-- 1 root root 264990 Sep  7 07:05 build/libfmt.a
+=== compile & run a program against the built library
+fmt 120201 works inside a namespace-less chroot
+exit=7 (expect 7)
+BUILD-OK
+-rw-r--r-- 1 0 0 264990 Sep  7 07:06 /workspace/poc/libfmt-arch-built
+[rc=0]

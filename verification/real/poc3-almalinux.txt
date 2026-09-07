@@ -1,0 +1,41 @@
+### captured: 2026-09-07T07:01:13Z
+$ L=/workspace/lilipod/lilipod-v2; export LILIPOD_HOME=/workspace/lilipod-store-v2
+$L create --name poc3 --userns host -v /workspace/poc/src3:/src almalinux:9 /bin/sh /src/run.sh >/dev/null 2>&1
+$L start poc3 2>/dev/null
+for i in $(seq 1 55); do sleep 15; $L ps 2>/dev/null | grep -q poc3 || break; done
+sleep 3
+ID=$($L inspect poc3 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+grep -vE 'warn\]|debug\]' $LILIPOD_HOME/lilipod/containers/$ID/current-logs | sed 's/^[0-9]*:[a-z]*://' | grep -vE '^(Importing|Installing|Upgrading|Verifying|Preparing|Cleaning|Running)' | head -34
+$L rm poc3 >/dev/null 2>&1
+=== os:
+NAME="AlmaLinux"
+VERSION="9.8 (Olive Jaguar)"
+=== dnf: epel-release (extras repo), then fastfetch (epel) in a second transaction
+
+epel: epel-release-9-9.el9.noarch
+Installed:
+=== fastfetch --version:
+fastfetch 2.66.0 (x86_64)
+=== fastfetch --pipe (data sources: sysinfo(2), netlink, /etc):
+         'c:.                               root@poc3
+        lkkkx, ..       ..   ,cc,           ---------
+        okkkk:ckkx'  .lxkkx.okkkkd          OS: AlmaLinux 9.8 (Olive Jaguar) x86_64
+        .:llcokkx'  :kkkxkko:xkkd,          Kernel: Linux 6.18.39-gentoo-dist-bin
+      .xkkkkdood:  ;kx,  .lkxlll;           Uptime: 5 hours, 10 mins
+       xkkx.       xk'     xkkkkk:          Packages: 163 (rpm)
+       'xkx.       xd      .....,.          Shell: bash 5.1.8
+      .. :xkl'     :c      ..''..           Terminal: xterm
+    .dkx'  .:ldl:'. '  ':lollldkkxo;        Terminal Font: fixed (8.0pt)
+  .''lkkko'                     ckkkx.      Local IP (wlan0): 192.168.1.64/24
+'xkkkd:kkd.       ..  ;'        :kkxo.      Locale: C
+,xkkkd;kk'      ,d;    ld.   ':dkd::cc,     
+ .,,.;xkko'.';lxo.      dx,  :kkk'xkkkkc    [40m   [41m   [42m   [43m   [44m   [45m   [46m   [47m   [m
+     'dkkkkkxo:.        ;kx  .kkk:;xkkd.    [100m   [101m   [102m   [103m   [104m   [105m   [106m   [107m   [m
+       .....   .;dk:.   lkk.  :;,
+             :kkkkkkkdoxkkx
+              ,c,,;;;:xkkd.
+                ;kkkkl...
+                ;kkkkl
+                 ,od;
+POC3-OK
+[rc=0]

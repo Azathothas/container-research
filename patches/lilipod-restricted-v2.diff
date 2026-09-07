@@ -146,10 +146,18 @@ index 41b4f3d..51c797a 100644
  
  	if config.Ipc == constants.Private {
 diff --git a/pkg/containerutils/rootfs_utils.go b/pkg/containerutils/rootfs_utils.go
-index b21926d..8fde1ec 100644
+index b21926d..6fd3c45 100644
 --- a/pkg/containerutils/rootfs_utils.go
 +++ b/pkg/containerutils/rootfs_utils.go
-@@ -15,6 +15,7 @@ import (
+@@ -3,6 +3,7 @@
+ package containerutils
+ 
+ import (
++	"bytes"
+ 	"fmt"
+ 	"os"
+ 	"os/exec"
+@@ -15,6 +16,7 @@ import (
  	"github.com/89luca89/lilipod/pkg/imageutils"
  	"github.com/89luca89/lilipod/pkg/logging"
  	"github.com/89luca89/lilipod/pkg/procutils"
@@ -157,7 +165,7 @@ index b21926d..8fde1ec 100644
  	"github.com/89luca89/lilipod/pkg/utils"
  	"github.com/moby/sys/capability"
  )
-@@ -471,10 +472,194 @@ func setupVolumes(path string, conf utils.Config) error {
+@@ -471,10 +473,197 @@ func setupVolumes(path string, conf utils.Config) error {
  	return nil
  }
  
@@ -189,8 +197,11 @@ index b21926d..8fde1ec 100644
 +	// already carry one: a host resolv.conf pointing at a loopback resolver
 +	// (eg. 127.0.0.53) is unusable from inside the container, and the
 +	// operator may have installed a working one.
-+	if _, err := os.Lstat(filepath.Join(path, "etc", "resolv.conf")); err != nil {
-+		if hostResolv, rerr := fileutils.ReadFile("/etc/resolv.conf"); rerr == nil {
++	if existing, rerr := fileutils.ReadFile(filepath.Join(path, "etc", "resolv.conf")); rerr != nil ||
++		!bytes.Contains(existing, []byte("nameserver")) {
++		// no resolv.conf at all, or one without a nameserver (images often
++		// ship an empty placeholder): install the host's.
++		if hostResolv, herr := fileutils.ReadFile("/etc/resolv.conf"); herr == nil {
 +			if werr := fileutils.WriteFile(
 +				filepath.Join(path, "etc", "resolv.conf"), hostResolv, 0o644); werr != nil {
 +				logging.LogWarning("restricted runtime: could not set up resolv.conf: %v", werr)
@@ -352,7 +363,7 @@ index b21926d..8fde1ec 100644
  	// this section will make sure that mounts are private in this mount
  	// namespace, so that even with root we do not have pending mounts.
  	logging.LogDebug("remounting %s as private", path)
-@@ -647,15 +832,43 @@ func RunContainer(tty bool, conf utils.Config) error {
+@@ -647,15 +836,43 @@ func RunContainer(tty bool, conf utils.Config) error {
  		return fmt.Errorf("setup rootfs: %w", err)
  	}
  
@@ -401,7 +412,7 @@ index b21926d..8fde1ec 100644
  		err = setupCgroupfs(conf)
  		if err != nil {
  			logging.LogDebug("error: %+v", err)
-@@ -676,11 +889,18 @@ func RunContainer(tty bool, conf utils.Config) error {
+@@ -676,11 +893,18 @@ func RunContainer(tty bool, conf utils.Config) error {
  	logging.LogDebug("setting container hostname to %s", conf.Hostname)
  
  	// then we set up the hostname.
@@ -424,7 +435,7 @@ index b21926d..8fde1ec 100644
  	}
  
  	logging.LogDebug("become user: %s", conf.User)
-@@ -724,9 +944,11 @@ func RunContainer(tty bool, conf utils.Config) error {
+@@ -724,9 +948,11 @@ func RunContainer(tty bool, conf utils.Config) error {
  		return err
  	}
  
