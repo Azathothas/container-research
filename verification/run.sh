@@ -10,7 +10,7 @@
 #   ./run.sh census spawn    only those sections
 #
 # Sections: census spawn bwrap tar libarchive lilipod podman interpose
-#           lookpath sources arithmetic
+#           lookpath arch sources arithmetic
 #
 # Requires: go, gcc, docker (running), network for image pulls. Sections that
 # need a missing dependency print SKIP and continue.
@@ -325,6 +325,63 @@ EOF
 		env "${MODEL[@]}" "$OUT/confine" "$(command -v chroot)" "$OUT/minroot" \
 			/bin/sh -c 'head -2 /etc/os-release; id; apk --version'
 	} 2>&1 | tee "$RES/lookpath.txt"
+fi
+
+# ---------------------------------------------------------------- arch
+if sel arch; then
+	say "a distribution rootfs entered by chroot: what works and what it costs"
+	if have docker && docker info >/dev/null 2>&1; then
+		{
+			R="$OUT/archroot"
+			rm -rf "$R" && mkdir -p "$R"
+			docker pull -q archlinux:latest >/dev/null 2>&1
+			cid=$(docker create --rm archlinux:latest) &&
+				docker export "$cid" | tar -x -C "$R" 2>/dev/null
+			docker rm -f "$cid" >/dev/null 2>&1
+			cp /etc/resolv.conf "$R/etc/resolv.conf"
+			CH=$(command -v chroot)
+			run_in() { env "${MODEL[@]}" "$OUT/confine" "$CH" "$R" "$@"; }
+
+			echo "## symlinks in the shipped rootfs"
+			printf 'total=%s absolute=%s\n' \
+				"$(find "$R" -type l | wc -l)" \
+				"$(find "$R" -type l -lname '/*' | wc -l)"
+			ls -l "$R/etc/mtab"
+
+			echo "## A. plain chroot, no /proc, mtab left as the shipped dangling symlink"
+			run_in /bin/bash -c 'head -2 /etc/os-release; id; pacman -Q | wc -l' 2>&1 | head -5
+
+			echo "## B. pacman -Sy with the rootfs as shipped"
+			run_in /usr/bin/pacman -Sy --noconfirm 2>&1 | tail -3
+
+			echo "## C. same after disabling DownloadUser (an unmapped uid)"
+			sed -i 's/^DownloadUser/#DownloadUser/' "$R/etc/pacman.conf"
+			run_in /usr/bin/pacman -Sy --noconfirm 2>&1 | tail -3
+
+			echo "## D. install with signatures enforced, before the keyring exists"
+			grep -m1 '^SigLevel' "$R/etc/pacman.conf"
+			run_in /usr/bin/pacman -S --noconfirm --needed tree 2>&1 | grep -aiE 'gpgme|signature|installing' | head -3
+
+			echo "## E. after pacman-key --init && --populate"
+			run_in /usr/bin/pacman-key --init >/dev/null 2>&1
+			run_in /usr/bin/pacman-key --populate archlinux >/dev/null 2>&1
+			run_in /usr/bin/pacman -S --noconfirm --needed tree 2>&1 | grep -aiE 'keyring|integrity|installing' | head -3
+			run_in /usr/bin/tree --version 2>&1 | head -1
+
+			echo "## F. does pacman need /etc/mtab? CheckSpace is commented out by default"
+			grep -m1 'CheckSpace' "$R/etc/pacman.conf"
+			rm -f "$R/etc/mtab"
+			run_in /usr/bin/pacman -S --noconfirm --needed which 2>&1 | grep -aiE 'installing|error' | head -2
+			echo "## G. with CheckSpace enabled and no /etc/mtab"
+			sed -i 's/^#CheckSpace/CheckSpace/' "$R/etc/pacman.conf"
+			run_in /usr/bin/pacman -S --noconfirm --needed bc 2>&1 | grep -aiE 'mount points|mtab|installing' | head -3
+			echo "## H. with CheckSpace enabled and a static /etc/mtab"
+			printf 'none / none rw 0 0\n' > "$R/etc/mtab"
+			run_in /usr/bin/pacman -S --noconfirm --needed bc 2>&1 | grep -aiE 'disk space|installing' | head -2
+		} 2>&1 | tee "$RES/arch.txt"
+	else
+		echo "SKIP: docker not running" | tee "$RES/arch.txt"
+	fi
 fi
 
 # ---------------------------------------------------------------- sources

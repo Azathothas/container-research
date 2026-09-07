@@ -1,0 +1,36 @@
+## symlinks in the shipped rootfs
+total=1326 absolute=6
+lrwxrwxrwx 1 root root 12 Sep  7 02:09 /home/user/container-research/verification/build/archroot/etc/mtab -> /proc/mounts
+## A. plain chroot, no /proc, mtab left as the shipped dangling symlink
+NAME="Arch Linux"
+PRETTY_NAME="Arch Linux"
+uid=0(root) gid=0(root) groups=0(root),65534(nobody)
+warning: database file for 'core' does not exist (use '-Sy' to download)
+warning: database file for 'extra' does not exist (use '-Sy' to download)
+## B. pacman -Sy with the rootfs as shipped
+:: Synchronizing package databases...
+error: failed to chown temporary download directory /var/lib/pacman/sync/download-RoJODF: Invalid argument
+error: failed to synchronize all databases (failed to initialize download)
+## C. same after disabling DownloadUser (an unmapped uid)
+:: Synchronizing package databases...
+ core downloading...
+ extra downloading...
+## D. install with signatures enforced, before the keyring exists
+SigLevel    = Required DatabaseOptional
+error: GPGME error: Invalid crypto engine
+error: GPGME error: Invalid crypto engine
+error: tree: missing required signature
+## E. after pacman-key --init && --populate
+checking keyring...
+checking package integrity...
+installing tree...
+tree v2.3.2 (c) 1996 - 2026 by Steve Baker, Thomas Moore, Francesc Rocher, Florian Sesser, Kyosuke Tokoro
+## F. does pacman need /etc/mtab? CheckSpace is commented out by default
+#CheckSpace
+installing which...
+## G. with CheckSpace enabled and no /etc/mtab
+:: Proceed with installation? [Y/n] error: could not open file: /etc/mtab: No such file or directory
+error: could not determine filesystem mount points
+## H. with CheckSpace enabled and a static /etc/mtab
+checking available disk space...
+installing bc...
