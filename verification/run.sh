@@ -349,7 +349,7 @@ if sel arch; then
 			ls -l "$R/etc/mtab"
 
 			echo "## A. plain chroot, no /proc, mtab left as the shipped dangling symlink"
-			run_in /bin/bash -c 'head -2 /etc/os-release; id; pacman -Q | wc -l' 2>&1 | head -5
+			run_in /bin/bash -c 'head -2 /etc/os-release; id; echo "packages: $(pacman -Q | wc -l)"' 2>&1 | grep -av '^warning:'
 
 			echo "## B. pacman -Sy with the rootfs as shipped"
 			run_in /usr/bin/pacman -Sy --noconfirm 2>&1 | tail -3
@@ -378,6 +378,7 @@ if sel arch; then
 			echo "## H. with CheckSpace enabled and a static /etc/mtab"
 			printf 'none / none rw 0 0\n' > "$R/etc/mtab"
 			run_in /usr/bin/pacman -S --noconfirm --needed bc 2>&1 | grep -aiE 'disk space|installing' | head -2
+			run_in /bin/bash -c 'echo "packages now: $(pacman -Q | wc -l)"' 2>&1 | tail -1
 		} 2>&1 | tee "$RES/arch.txt"
 	else
 		echo "SKIP: docker not running" | tee "$RES/arch.txt"
