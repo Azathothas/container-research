@@ -131,6 +131,32 @@ dpkg/rpm log chown *warnings* but proceed.
 
 ---
 
+## 2.5 All this machinery vs. vanilla `chroot`: what is actually gained
+
+Honest framing first: **mechanically, everything this spec does is expressible as
+a pile of shell scripts around `chroot(2)`** — same syscalls, same walls, no
+kernel magic; nothing here conjures privileges. The product *is* the pile of
+scripts — probed, tested, and wearing docker's face. "Why not just chroot?"
+therefore reduces to four advantages vanilla `chroot` structurally cannot provide:
+
+| | `chroot rootfs/ cmd` | dokra (this spec) |
+|---|---|---|
+| **Interface** | bespoke script per use, nothing reusable | docker/podman verbs, flags, exit codes — existing CI, scripts and agent habits work unmodified (§5.1) |
+| **Images** | bring your own rootfs, by hand | `pull`/`push`/`save`/`load` against any OCI registry; layered extraction that survives the chown wall (ownership sidecar); tags, manifests, store |
+| **Lifecycle & state** | none — you own daemons, logs, cleanup | named containers, `ps`/`stop`/`rm`/`inspect`/`logs`/`exec`, running-state detection, detached start with log capture, restart policy |
+| **Pre-solved walls** | you rediscover every failure mode of §6 yourself (each entry there cost real debugging time; a bare chroot hits it with a misleading errno) | environment-completion layer automates all PoC fixups (dev shims, resolv.conf, mtab, pacman/apt/dnf config, keyrings); probe discipline prevents the empty-netns and setgroups traps; the mode banner states what you actually got |
+
+Secondary gains: reproducible in-container toolchains (PoCs 1–4 become one
+`docker run`-shaped command each), and single-file distribution (static binary,
+onelf-packable with an embedded rootfs).
+
+One sentence: **chroot is a syscall; dokra is the missing container userland
+around it, speaking the only container language most agents know.** Where it
+cannot beat chroot — kernel isolation — it says so out loud; §6 is the price of
+not having this layer.
+
+---
+
 ## 3. What to read, in order
 
 If you have minutes, not hours:
@@ -201,22 +227,76 @@ If real namespaces+mounts are available (normal host), dokra uses them and is
 indistinguishable from a normal runtime. The ladder: namespaces → chroot →
 interpose → `unsupported <reason>`.
 
-### 5.3 CLI surface (docker-compatible subset, v1)
+### 5.3 CLI surface and docker/podman parity matrix
 
-| Command | Honored flags | Notes |
+Statuses (spec; PoC-proven items are marked):
+
+- **Native** — real semantics, indistinguishable from docker for this flag.
+- **Degraded** — works, with a documented semantic difference (banner states it).
+- **Stub** — accepted, no-op, listed in the mode banner (never fatal, never silent).
+- **None** — fails with a named reason (per §5.6: never silently substitute a
+  weaker meaning for an isolation request).
+
+**Commands**
+
+| Command | Status | Notes |
 |---|---|---|
-| `run` | `-i`, `-t`*, `-d`, `--rm`, `--name`, `-e`, `-v`, `-w`, `u`, `--hostname`, `--pull`, `--network`, `--entrypoint`, `--platform` | `-t`* requires L1 fix; works after. `--network` other than `host` → banner warning, host net. `-v` copy-in (L5) + new `--sync` bidirectional option. `--platform` non-native → clear error. |
-| `create`/`start`/`stop`/`rm`/`ps -a`/`inspect`/`logs`/`exec` | as docker | `exec` = fresh chroot enter (L6). `logs` from the store. `ps` from launcher-tracked pids + `/proc/*/root` marker (v2 mechanism, kept). |
-| `pull`/`images`/`rmi`/`tag`/`push` | registry flags, `--tls-verify` | full OCI registry client (lilipod's crane lineage). Extraction always ownership-neutral + sidecar (L4). |
-| `cp` | `-a`, `-L` | container→host copies from the store rootfs; host→container writes into rootfs. |
-| `system info`/`version` | — | reports probes + mode, docker-ish JSON shape. |
-| `build` | `-f`, `-t`, `--build-arg` | v1: interpret a **RUN-only subset** of Dockerfile against a store rootfs (RUN/ENV/WORKDIR/COPY/ARG/FROM/USER(stub)); no buildkit. |
-| everything else | — | `--help` works; unknown verbs produce docker's own error text shape. |
+| `run` | **Native** | PoCs 1–4 ran through exactly this path |
+| `create` / `start` / `stop` / `restart` / `rm` | **Native** | PoC-proven (detached start + running-state `ps`) |
+| `ps [-a]` / `inspect` / `logs` | **Native** | `inspect` gains a true-mode field; `logs` from store capture |
+| `exec` | **Degraded** | fresh chroot re-entry (shares only the fs with the original process); PoC-proven working incl. hostname ns |
+| `kill` / `wait` | **Native** | signals via launcher-tracked pid tree |
+| `pause` / `unpause` | **Degraded** | SIGSTOP/SIGCONT process-freeze, not cgroup freeze |
+| `cp` | **Native** | copies against the store rootfs |
+| `pull` / `push` / `images` / `rmi` / `tag` / `search` / `login` / `logout` | **Native** | full OCI registry client; extraction ownership-neutral + sidecar |
+| `save` / `load` / `export` / `import` | **Native** | archives carry the ownership sidecar (L4) |
+| `history` | **Native** | from image config |
+| `diff` | **Degraded** | rootfs snapshot diff (no overlayfs) |
+| `build` | **Degraded** | RUN-subset Dockerfile interpreter (RUN/ENV/WORKDIR/COPY/ARG/FROM/USER-stub); no buildkit |
+| `attach` | **Degraded** | log tail + signal proxy; true tty attach after L1 |
+| `stats` / `top` | **Degraded** | per-pid `/proc` of the launcher subtree, honestly labeled; no cgroups exist |
+| `port` | **Stub** | services already sit on the host network |
+| `events` | **Degraded** | launcher-local event log |
+| `system info` / `version` | **Native** | reports probes + achieved mode |
+| `system prune` / `container prune` / `image prune` | **Native** | store GC |
+| `volume ls/create/rm/inspect` | **Degraded** | named dirs + explicit `sync` push/pull (L5); no live mounts |
+| `network ls` | **Stub** | lists exactly `host` |
+| `network create/connect/...` | **None** | no populatable netns exists; named-reason failure |
+| `compose` | **None** | v1 scope; error text points at the run-loop equivalent |
+| `swarm`/`service`/`stack`/`node` | **None** | orchestrators need real containers |
 
-Flags that exist in docker but are meaningless here (`--cpus`, `--memory`,
-`--security-opt`, `--cap-add`, `--pid=container:`, `--network=bridge`, `--dns`,
-`--tmpfs`, `--read-only`, `--userns`) are **accepted, stubbed, and listed in the
-banner**: "ignored: cpus, memory (no cgroups available)". Exit code stays 0.
+**`run`/`create` flags**
+
+| Flag | Status | Notes |
+|---|---|---|
+| `-i` / `-d` / `--rm` / `--name` | **Native** | PoC-proven |
+| `-e` / `--env-file` / `-w` / `--entrypoint` / `--label` / `--pull` / `--cidfile` | **Native** | PoC-proven (`-e`,`-w`,`--entrypoint`,`--pull`) |
+| `--add-host` | **Native** | completion layer writes `/etc/hosts` |
+| `--hostname` | **Native** | probed `CLONE_NEWUTS`; PoC-proven (`finalhost`, host untouched) |
+| `--platform` | **Native** | `linux/amd64`; others fail with a clear error |
+| `-t` | **Degraded** | after L1: pty pair allocated *outside* the chroot, fds passed in, `TIOCSCTTY` in child; payloads reopening `/dev/pts/N` by name unsupported (spec, not yet PoC-proven) |
+| `-a` | **Degraded** | with `-d`; log tail + signal proxy |
+| `-v` / `--mount` | **Degraded** | snapshot copy-in (PoC-proven); `:ro` **rejected** (unenforceable — honesty rule); `--sync` opt-in bidirectional; `type=tmpfs` → rootfs dir |
+| `-u` / `--user` | **Degraded** | only `0:0` is real; other ids via interposer identity memo for C payloads; static/Go payloads get `0:0` + warning (L9) |
+| `--device` | **Degraded** | fd-passing allowlist opened before chroot (L3) |
+| `--tmpfs` | **Degraded** | real dir in the container rootfs, not kernel tmpfs |
+| `--restart` | **Degraded** | launcher-level respawn; no supervisor integration |
+| `--health-cmd` / `--health-interval` … | **Degraded** | periodic `exec` probe by the launcher |
+| `--init` | **Degraded** | built-in reaper between launcher and payload |
+| `--log-driver` | **Degraded** | `json-file` only |
+| `--pid=host` / `--ipc=host` / `--network=host` / `--userns=host` | **Native** | host is the only mode; accepted verbatim |
+| `--pid` (private) | **None** | empty pidns without `/proc` breaks tooling; named-reason failure |
+| `--network` (`none`/`bridge`/custom) | **None** | isolation request → loud failure (§5.6); no populatable netns |
+| `--userns=keep-id`/`private` | **Stub** | single mapping exists; behaves as host, banner states it |
+| `-p` / `--expose` / `--link` | **Stub** | shared host net: the service is already reachable |
+| `--memory` / `--cpus` / `--pids-limit` / `--ulimit` | **Stub** | no cgroups exist here |
+| `--privileged` / `--cap-add` / `--cap-drop` | **Stub** | process already holds every capability in its userns |
+| `--security-opt` | **Stub** | no seccomp/apparmor profiles apply |
+| `--read-only` | **Stub** | rootfs is already a per-container copy; enforcement not attempted |
+| `--dns` / `--dns-search` / `--dns-option` | **Stub** | resolver managed by the completion layer |
+| `--detach-keys` | **Stub** | no tty by default |
+| `--cgroup-parent` / `--cgroupns` | **Stub** | no cgroups |
+| `--isolation` | **Stub** | accepted verbatim |
 
 ### 5.4 The environment-completion layer (the "it just works" core)
 
