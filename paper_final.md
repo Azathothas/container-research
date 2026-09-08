@@ -18,33 +18,50 @@ rurima, ruri, treesandbox, sandlock and pathshim — and sharpens the mechanism
 model with the new mount API and seccomp user-notification surfaces (§3.7a, §11a).
 
 The central finding is one of attribution. The runtime is not "a seccomp filter that
-denies namespaces". It is **two mechanisms with different signatures**: a user
-namespace whose ID maps cover almost nothing, and a seccomp filter that denies a
-short list of syscalls. Separating them explains failures that neither mechanism
-explains alone, and it inverts two conclusions that a single-mechanism reading
+denies namespaces". It is **three mechanisms with different signatures**: a user
+namespace whose ID maps cover almost nothing (**N**), a seccomp filter that denies a
+short list of syscalls (**F**), and a path-scoped LSM that decides where writes and
+mount attachments may land (**M**). Separating them explains failures that no single
+mechanism explains, and it inverts three conclusions that a one-mechanism reading
 produces. `clone(2)` with `CLONE_NEWNS` is *not* denied — only `unshare(2)` and
 `mount(2)` are, so a process can hold a private mount namespace and still be unable
-to mount anything in it. And the `EINVAL` that stops GNU tar, Apptainer's Go
-unpacker and containers/storage's layer applier alike is not a filter rule at all: it
-is `chown` to a **gid that is not mapped in the current user namespace**.
+to mount anything in it. The `EINVAL` that stops GNU tar, Apptainer's Go unpacker
+and containers/storage's layer applier alike is not a filter rule at all: it is
+`chown` to a **gid that is not mapped in the current user namespace**. And the
+directories the process cannot write to are not chosen by ownership: `/` and `/tmp`
+have the same owner and the same mount flags, and only one of them accepts a write.
 
 Every empirical claim below is reproduced by a harness (`verification/`) that models
-the runtime from those two mechanisms and switches each independently. Under that
-model we reproduce the reported identity block byte for byte, including
-`groups=0,65534` and a capability mask with more bits than the host root process
-holds; lilipod's image ID `ff727edbcbe60df2bd6a89cf65d6db2b`; GNU tar's exact
-ownership failure; `apk-tools 3.0.6-r0` running from an image rootfs entered by
-`chroot`; and a full Arch Linux userspace installing signed packages from live
-repositories — once two preconditions that no prior account identified are met.
+those mechanisms and switches each independently, and by a containerized
+reconstruction (`experiments/`) that rebuilds the runtime's identity, mount topology
+and filter from scratch on an ordinary host. Under them we reproduce the reported
+identity block byte for byte, including `groups=0,65534`, the `0 1000 1` ID map and
+a capability mask with more bits than the host root process holds; lilipod's image
+ID `ff727edbcbe60df2bd6a89cf65d6db2b`; GNU tar's exact ownership failure; the
+filter-versus-kernel split across the whole new mount API; `apk-tools 3.0.6-r0`
+running from an image rootfs entered by `chroot`; and a full Arch Linux userspace
+installing signed packages from live repositories — once two preconditions that no
+prior account identified are met.
 
 We close with an implementable specification (§10) for a runtime that probes the
 operations it needs rather than the privileges that usually imply them, reports the
 mode it actually achieved, and never presents path virtualization as isolation.
+`TOOL.md` turns that specification into a build order for `podbox`, the runtime it
+describes.
 
-**Evidence convention.** Every claim is tagged: **[V]** verified by the harness in
-this document; **[S]** established by reading a named upstream source at a named
-revision; **[R]** reported from the original experiment record and *not* reproducible
-here. Section 3.6 says exactly what [R] covers and why.
+**Evidence convention.** Every claim is tagged:
+
+| tag | means | where it comes from |
+|---|---|---|
+| **[V]** | reproduced here, by the model harness or the containerized reconstruction | `verification/results/`, `experiments/results/` |
+| **[T]** | observed on the target runtime itself and captured, but not reproducible here | `verification/real/` |
+| **[S]** | established by reading a named upstream source at a named revision | the source, cited at file and line |
+| **[R]** | reported from the original experiment record, artefact never published | §3.6 says exactly what this covers |
+
+**[T]** and **[V]** were one tag in earlier revisions of this paper, which hid a
+real distinction: a target capture is a single observation of a machine nobody else
+can reach, while a **[V]** claim is a command a reader can run. Where a claim holds
+both ways it is tagged **[V][T]**, and that pairing is the strongest evidence here.
 
 ---
 
@@ -61,15 +78,18 @@ Two properties of such an environment make diagnosis unusually treacherous:
 1. **The process looks maximally privileged.** It is uid 0 with every capability bit
    set. Nothing in `id` or `/proc/self/status` suggests a restriction, so denials
    read as bugs.
-2. **Two different mechanisms produce overlapping symptoms.** A seccomp filter and a
-   user namespace with a narrow ID map both return `EPERM` and `EINVAL` from
-   operations a privileged process expects to succeed. Attributing a denial to the
-   wrong one leads to fixes that cannot work and to conclusions that invert.
+2. **Three different mechanisms produce overlapping symptoms.** A seccomp filter, a
+   user namespace with a narrow ID map, and a path-scoped LSM all return `EPERM`,
+   `EACCES` or `EINVAL` from operations a privileged process expects to succeed, and
+   two of them can produce the *same* errno for the *same* call. Attributing a
+   denial to the wrong one leads to fixes that cannot work and to conclusions that
+   invert — three of which this paper had to reverse.
 
 This paper does the attribution. Section 3 characterizes the runtime as a
-two-mechanism model and shows which mechanism produces which denial. Sections 5–8
+three-mechanism model and shows which mechanism produces which denial. Sections 5–8
 walk each tool to its actual wall. Section 9 collects the four walls that recur
-across every tool. Section 10 turns them into a specification.
+across every tool. Section 10 turns them into a specification, and `TOOL.md` turns
+that specification into a build order.
 
 **Scope.** In this environment the security boundary is *outside* the process under
 study. "Container" here means a disposable, image-derived userspace, not an
@@ -83,21 +103,23 @@ requires `CAP_SYS_CHROOT` and is not a sandbox.
 
 | # | Finding | Evidence |
 |---|---|---|
-| F1 | The runtime is a **user namespace with a partial ID map** *plus* a seccomp filter. The namespace alone accounts for the `mount`, `mknod`, `setuid`, `setgroups` and `chown` denials and for the unwritable directories; the filter is needed only for `unshare`, `ptrace`, and `mount` inside a namespace the process owns. | [V] §3.3 |
+| F1 | The runtime is a **user namespace with a partial ID map** (**N**), *plus* a seccomp filter (**F**), *plus* a path-scoped LSM (**M**). N alone accounts for the `mknod`, `setuid`, `setgroups` and `chown` denials and for unwritable directories whose owner is unmapped; F is needed for `unshare`, `ptrace`, and `mount` inside a namespace the process owns; M is needed for the write allowlist and for `move_mount`. | [V][T] §3.3, §3.7 |
 | F2 | `clone(2)` with `CLONE_NEWNS` **succeeds**. The resource these tools cannot get is not the namespace, it is the mount. | [V] §3.4, §8.1 |
 | F3 | The `EINVAL` wall shared by GNU tar, Apptainer and containers/storage is `chown`/`lchown` to an **unmapped gid**, not a filter rule. It reproduces with no filter installed at all. | [V] §9.1 |
 | F4 | Go's `os/exec` calls `setgroups` in the child for a non-nil `Credential` unless `NoSetGroups` is set. This one field, not dropping `Credential`, is the correct fix. | [V][S] §9.2 |
 | F5 | Stock lilipod at uid 0 fails **once**, in `EnsureFakeRoot`'s re-exec, and the cause is `setgroups` — reproducible with the namespace alone, no filter involved. | [V][S] §5 |
-| F6 | Podman's default overlay driver fails at `mount(2)`, but `--storage-driver vfs` **initializes successfully**. Its real wall is layer application, which peels back through `unshare` → `mount` → the same unmapped-gid `lchown`. | [V] §6 |
+| F6 | Podman's default overlay driver fails at `mount(2)`, but `--storage-driver vfs` **initializes successfully** — so the "no path exists" verdict is wrong as an architectural claim. It is not a recipe: the target's own podman 5.8.2 dies earlier, with a bare `ENOENT`. Podman's real wall is layer application, which peels back through `unshare` → `mount` → the same unmapped-gid `lchown`. | [V] §6 (podman 4.3.1); [T] §6 (podman 5.8.2) |
 | F7 | `-20` in dwarfs' `short write: -20 != N` is libarchive's `ARCHIVE_WARN`, not an errno; the underlying `archive_errno` is `ENOSPC` (28). Reproduced through the same API and option set. | [V][S] §8.2 |
 | F8 | A libc `LD_PRELOAD` shim cannot see Go's `lchown` — **with or without cgo**. Go's `os` package issues it as a direct syscall. | [V] §9.3 |
 | F9 | A real Arch rootfs entered by plain `chroot` installs **signed** packages from live repositories under this runtime, but only after (a) disabling pacman's `DownloadUser`, which chowns to an unmapped uid, and (b) initializing the keyring. Neither precondition appears in any prior account. | [V] §8.3 |
 | F10 | `/etc/mtab` is **not** required by pacman. It is read only when `CheckSpace` is enabled, which Arch's shipped `pacman.conf` leaves commented out. | [V] §8.3 |
 | F11 | Several probes in common use are non-discriminating: `mknod(S_IFCHR, 0)` creates a whiteout and never tests `CAP_MKNOD`; `unshare(CLONE_NEWUSER)` from any Go program returns `EINVAL` regardless of policy. | [V] §3.5 |
-| F12 | onelf refuses a bundle symlink whose target is **absolute** or climbs above the package root. A relative target that stays inside the bundle is accepted even when it dangles. | [S] §8.4 |
-| F13 | The new mount API splits cleanly: `fsopen`/`fsmount`/`open_tree(CLONE)`/`mount_setattr` are permitted (so `may_mount()` provably passes), while `move_mount` attach is denied by the **LSM M** (`security_move_mount`), not by the filter — it returns `ENOENT` for a bogus destination, which seccomp cannot produce. Detached mounts are creatable but not openable (`openat` on them → `EACCES`). | [V] §3.7a |
-| F14 | The filter also denies `process_vm_readv`/`process_vm_writev` (EPERM for a bogus pid, which the kernel would answer `ESRCH`); `ptrace(2)`, `process_vm_*` are all F, while `pidfd_getfd`/`process_madvise`/`kcmp` execute. But **`/proc/<pid>/mem` of a child opens read-only and reads correctly**, and seccomp user-notification with `SECCOMP_IOCTL_NOTIF_ADDFD` fd injection works. A notif-supervisor tier is therefore viable if it reads arguments via `/proc/<pid>/mem`. | [V] §3.7a |
-| F15 | Unpatched third-party tools now span the §10 mode ladder: **udocker 1.3.17's F1 fakechroot engine runs containers** (pull → apk install → curl HTTPS, all in-image) via libc interposition, and **ruri 3.9.5 runs a chroot container** with per-mount failure warnings and a probed refusal of unshare mode. Of the rest: sandlock's Landlock+seccomp tiers confine unpatched while its notif tier degrades (dry-run fails open with a false "no changes" report; network fails closed), and the others die at walls this paper already names. | [V] §11a |
+| F12 | onelf refuses a bundle symlink whose target is **absolute** or climbs above the package root. A relative target that stays inside the bundle is accepted even when it dangles — including `etc/mtab -> ../proc/self/mounts`, the link the original account says was rejected. | [S] §8.4 |
+| F13 | The new mount API splits cleanly: `fsopen`/`fsmount`/`open_tree(CLONE)`/`mount_setattr` are permitted (so `may_mount()` provably passes), while `move_mount` attach is denied by the **LSM M** (`security_move_mount`), not by the filter — it returns `ENOENT` for a bogus destination, which seccomp cannot produce. Detached mounts are creatable but not openable (`openat` on them → `EACCES`). | [T] §3.7a; the permitted half and the `ENOENT` discriminator [V] §3.7b; the kernel attribution [S] §3.7a |
+| F14 | The filter also denies `process_vm_readv`/`process_vm_writev` (EPERM for a bogus pid, which the kernel would answer `ESRCH`); `ptrace(2)` and `process_vm_*` are all F, while `pidfd_getfd`/`process_madvise`/`kcmp` execute. But **`/proc/<pid>/mem` of a child opens read-only and reads correctly**, and seccomp user-notification with `SECCOMP_IOCTL_NOTIF_ADDFD` fd injection works. A notif-supervisor tier is therefore viable if it reads arguments via `/proc/<pid>/mem`. | [T] §3.7a; the discriminator and the listener [V] §3.7b |
+| F15 | Unpatched third-party tools now span the §10 mode ladder: **udocker 1.3.17's F1 fakechroot engine runs containers** (pull → apk install → curl HTTPS, all in-image) via libc interposition, and **ruri 3.9.5 runs a chroot container** with per-mount failure warnings and a probed refusal of unshare mode. Of the rest: sandlock's Landlock+seccomp tiers confine unpatched while its notif tier degrades (dry-run fails open with a false "no changes" report; network fails closed), and the others die at walls this paper already names. | [T] §11a; udocker's ownership-neutral extraction and its no-passwd remap [S] §11a |
+| F16 | The target holds a **mount namespace owned by its user namespace**, not merely a user namespace. `may_mount()` asks for `CAP_SYS_ADMIN` in `current->nsproxy->mnt_ns->user_ns`, so a model that creates only a user namespace fails `fsopen`/`fsmount` with `EPERM` where the target succeeds. This is the one structural property of the runtime that every prior account, including earlier revisions of this paper, left out. | [V][S] §3.2, §3.7b |
+| F17 | Two probe verdicts in this paper's own harness were artefacts, of the same class the paper warns about: a mount row that reported a child's exit code rather than the mount's result, and a chown probe that overwrote the compiled C probe because both used `/tmp/cprobe`. Both are fixed; the second is why `verification/real/cprobe.txt` contains a permission error instead of a census. | [V] §3.7, §4.1 |
 
 ---
 
@@ -149,7 +171,7 @@ CapBnd: 000001ffffffffff
 
 **[V]** (`verification/results/census.txt`)
 
-**Settled on the target.** The one read §12 asks for now exists
+**Settled on the target.** The one read §12 asked for now exists
 (`verification/real/identity.txt`, 2026-09-07):
 
 ```text
@@ -161,26 +183,80 @@ $ ls -l /proc/self/ns/user /proc/1/ns/user
 ... user:[4026533335]   (identical: the target init shares this user namespace)
 ```
 
-The target is a user namespace mapping **only `0 -> 1000`** (not `0 -> 0` as in our
-model), with `setgroups` denied, shared with the sandbox init. The model's
-attribution table is thereby confirmed in mechanism and corrected in detail: the
-unmapped id that produces `EINVAL` from `setuid`/`chown` is any id other than 0 —
-including 1000, which the model had mapped. The bare census
-(`verification/real/probe-census.txt`, `cprobe.txt`) reproduces every row of §3.3's
-N+F column on the target itself, with one exception and one addition, both recorded
-in §3.3 and §3.7.
+**[T]** The target is a user namespace mapping **only `0 -> 1000`**, with
+`setgroups` denied, shared with the sandbox init. Which host id sits behind the map
+changes nothing about the mechanism — what matters is that the map has one entry —
+but the detail is worth having, because it says the sandbox's own init runs as an
+ordinary user and the confinement is one `clone(CLONE_NEWUSER)` deep.
+
+**And reproduced from scratch.** `experiments/` rebuilds that identity on an
+ordinary host, in a container, with the target's own map:
+
+```text
+$ ./experiments/20-enter-target.sh -- /workspace/.harness/probe id
+uid=0 gid=0 groups=[0 65534]
+CapPrm: 000001ffffffffff
+CapEff: 000001ffffffffff
+CapBnd: 000001ffffffffff
+NoNewPrivs: 1
+Seccomp: 2
+Seccomp_filters: 1
+/proc/self/uid_map: 0       1000          1
+/proc/self/gid_map: 0       1000          1
+/proc/self/setgroups: deny
+```
+
+**[V]** (`experiments/results/identity.txt`) — every line of the target's block,
+including the map, from a script anyone can run. Two implementation details cost
+real time and are recorded so they need not be rediscovered: the parent must drop
+to the host id **before** creating the namespace (a map of `0 -> 1000` translates
+that id and nothing else, so a child still running as host root lands on
+`overflowuid` with an empty capability set), and dropping euid clears the process's
+dumpable flag, after which re-exec of `/proc/self/exe` fails `EACCES` with nothing
+in the message to say why (`prctl(PR_SET_DUMPABLE, 1)` restores it).
+
+The bare census on the target (`verification/real/probe-census.txt`) reproduces
+every row of §3.3's N+F column, with the exceptions recorded in §3.3 and §3.7. Its
+companion `cprobe.txt` establishes nothing: it contains a permission error, because
+the Go probe's chown target and the compiled C probe were both `/tmp/cprobe`, so
+running the census truncated the C probe to an empty, non-executable file (F17).
 
 ### 3.2 The model
 
-We model the runtime as two mechanisms that can be switched on independently:
+We model the runtime as three mechanisms that can be switched on independently:
 
-| | Mechanism | Contents |
-|---|---|---|
-| **N** | User namespace | uid/gid maps covering only `0 -> 0`; `setgroups` denied; an unmapped supplementary group held from before entry |
-| **F** | Seccomp filter | `SECCOMP_SET_MODE_FILTER` with `PR_SET_NO_NEW_PRIVS`, inherited across `execve`, denying `unshare`, `setns`, `mount`, `umount2`, `pivot_root`, `ptrace` — and nothing else. (On the target, §3.7a adds `process_vm_readv`/`writev` to the verified deny list; the model was not updated because no experiment below depends on the difference.) |
+| | Mechanism | Contents | Switch |
+|---|---|---|---|
+| **N** | User namespace | uid/gid maps with a single entry (`0 -> 0` by default, `0 -> 1000` for the target's own shape); `setgroups` denied; an unmapped supplementary group held from before entry; **a mount namespace owned by that user namespace** | `CONFINE_USERNS`, `CONFINE_MAP_HOSTID`, `CONFINE_MOUNTNS` |
+| **F** | Seccomp filter | `SECCOMP_SET_MODE_FILTER` with `PR_SET_NO_NEW_PRIVS`, inherited across `execve`, denying `unshare`, `setns`, `mount`, `umount2`, `pivot_root`, `ptrace`, `process_vm_readv`, `process_vm_writev` — and nothing else | `CONFINE_SECCOMP`, `CONFINE_DENY_PROCESS_VM` |
+| **M** | Path-scoped LSM | a Landlock ruleset that *handles* the filesystem write rights and *grants* them only beneath `{/tmp, /dev/shm, /workspace, /state}` | `CONFINE_LANDLOCK` |
 
 Note what **F** does not contain: no rule for `clone`, `setuid`, `setgroups`,
-`chown`, `lchown` or `mknod`. Those denials all fall out of **N**.
+`chown`, `lchown`, `mknod`, or any of the new mount API. Those denials fall out of
+**N** and **M**.
+
+**The mount namespace is load-bearing, and no prior account named it (F16).**
+`may_mount()` is `ns_capable(current->nsproxy->mnt_ns->user_ns, CAP_SYS_ADMIN)`
+(`fs/namespace.c`, v6.18) **[S]**, and `fsmount(2)`, `move_mount(2)` and
+`unshare(CLONE_NEWNS)` all begin with it. A process that is root in a new *user*
+namespace while still using the initial *mount* namespace therefore fails that
+check: in the model without `CONFINE_MOUNTNS`, `fsopen`/`fsmount`/`open_tree` all
+return `EPERM`, where on the target they succeed. **[V]** Adding the mount namespace
+makes them succeed, and the model then matches the target row for row (§3.7b). The
+consequence for §3.7a's attribution is direct: because `may_mount()` provably passes
+on the target, no denial downstream of it can be a capability problem.
+
+**Why M is a distinct mechanism and not a variant of N.** A seccomp filter cannot
+implement a path allowlist — it sees only the syscall number and six registers, and
+cannot dereference a pointer. A user namespace can produce *an* unwritable directory,
+by way of an unmapped owner, and on the target it does exactly that for `/usr`,
+`/etc`, `/home` and `/dev`, which are owned by an id the map does not cover **[V]**.
+What N cannot produce is the target's actual split: `/` and `/tmp` are both tmpfs
+mounts created `uid=1000,gid=1000`, both `rw`, in a namespace where 1000 *is* the
+mapped id — and only `/tmp` accepts a write **[T]**. The reconstruction shows both
+halves of that argument in one run: under N alone the unmapped-owner directories are
+denied and `/` **is** writable, which is precisely the anomaly M exists to explain
+**[V]** (`experiments/results/`).
 
 ### 3.3 Attribution
 
@@ -215,7 +291,8 @@ both would, **N** is listed because it acts first and needs no filter rule.
 | `memfd_create`, and exec from it | OK | OK | OK | — |
 | `setsid`, `prctl(PR_SET_PDEATHSIG)` | OK | OK | OK | — |
 | exec from `/tmp` | OK | OK | OK | — |
-| write into a **uid-1000-owned** directory | OK | `EACCES` | `EACCES` | **N** (model) / **M** (target, §3.7) |
+| write into a directory owned by an **unmapped** id | OK | `EACCES` | `EACCES` | **N** |
+| write into a directory owned by a **mapped** id (`/` on the target) | OK | OK | OK | **M** denies it on the target (§3.7) |
 
 Two rows carry most of the weight.
 
@@ -236,16 +313,30 @@ The user namespace explains it exactly: `CAP_DAC_OVERRIDE` is checked by
 the caller's user namespace. An unmapped owner means the capability does not apply,
 and the write returns `EACCES` even though `CapEff` shows every bit set. **[V]**
 
-**Correction from the target (2026-09-07).** On the target, `/` and `/tmp` are both
-tmpfs mounts created with `uid=1000,gid=1000` — in a namespace whose only mapping is
-`0 -> 1000`, both owners are *mapped*, and both mounts are `rw`. Yet `/` rejects
-writes (`mkdir /run` → `EACCES`) and `/tmp` accepts them (`verification/real/writability.txt`,
-`mountinfo.txt`). Mapping therefore cannot be the discriminator there; a **third
-mechanism, a path-scoped write policy (M)**, is: writable exactly `{/tmp,
-/dev/shm, /workspace, /state}`, denied everywhere else. A filter cannot implement
-it (same pointer argument), so it is an LSM-class restriction (Landlock-style
-allowlist). The model's N-explanation of this row stands for the model; on the
-target, M is what acts. §3.7 records this.
+**The unmapped-owner argument is right, and it is not the whole story (2026-09-07).**
+On the target, `/` and `/tmp` are both tmpfs mounts created with `uid=1000,gid=1000`
+— in a namespace whose only mapping is `0 -> 1000`, both owners are *mapped*, and
+both mounts are `rw`. Yet `/` rejects writes (`mkdir /run` → `EACCES`) and `/tmp`
+accepts them **[T]** (`verification/real/writability.txt`, `mountinfo.txt`). Mapping
+cannot be the discriminator there; a **third mechanism, a path-scoped write policy
+(M)**, is: writable exactly `{/tmp, /dev/shm, /workspace, /state}`, denied everywhere
+else. A filter cannot implement it (same pointer argument), so it is an LSM-class
+restriction, and §3.7a narrows it to a single Landlock ruleset.
+
+The two explanations are not rivals, and the reconstruction shows them side by side
+in one run **[V]** (`experiments/results/`). Under N alone, with the target's own
+`0 -> 1000` map:
+
+```text
+/usr denied   /etc denied   /home denied   /dev denied     <- N: owner unmapped
+/ WRITABLE    /tmp WRITABLE   /workspace WRITABLE           <- owner mapped
+```
+
+Every directory the paper originally attributed to N is denied for exactly the
+reason it gave — and `/`, the one row that made M necessary, is writable, precisely
+as the N-only account predicts and the target contradicts. That is the cleanest
+available statement of what M adds: not the unwritable system directories, which N
+already explains, but the denial of a directory whose owner **is** mapped.
 
 ### 3.4 The consequential asymmetry
 
@@ -308,7 +399,7 @@ operations.
 
 ### 3.7 Target deltas from the 2026-09-07 verification
 
-Everything above was modelled. The target run
+Everything above was modelled. The target run **[T]**
 (`verification/real/`) confirms the attribution and adds four facts:
 
 1. **The map is `0 -> 1000`, `setgroups` denied, shared with init** (§3.1).
@@ -318,19 +409,41 @@ Everything above was modelled. The target run
    `unshare`, `setns` and `ptrace` fails with `EPERM`; `chown`/`lchown` to unmapped
    ids fail with `EINVAL`; the whiteout `mknod` succeeds while a real device number
    fails. §9.4's conclusion stands.
-3. **A third mechanism M scopes writes by path** (§3.3 correction): the model's
-   two mechanisms do not explain `/` vs `/tmp` on the target.
+3. **A third mechanism M scopes writes by path** (§3.3): N and F alone do not
+   explain `/` versus `/tmp` on the target.
 4. **A UTS namespace is obtainable and hostnames with it.** A child spawned with
    `clone(CLONE_NEWUTS)` sets its hostname successfully on the target — the one
    namespace-shaped capability this runtime keeps in usable form. Neither earlier
    account records it; §5.4's adaptation now uses it.
 
-One harness caveat found while verifying: `probe`'s
-`mount(MS_SLAVE,/) in clone(NEWNS)` row reports the child's *exit code*, and the
-child exits 0 whether the mount fails or not — the row prints `OK` directly above
-the grandchild's `FAIL errno=1 EPERM` line, in `results/census.txt` and on the
-target alike. The bwrap differential, not that row, is what carries §3.4's
-conclusion, and it holds.
+**Three verdict problems in this paper's own harness, of the class it warns about
+(F17).** All were found by verifying, and all are fixed; the captures that predate
+the fixes are kept as they were taken, so the artefacts stay traceable.
+
+1. `probe`'s `mount(MS_SLAVE,/) in clone(NEWNS)` row reported the child's *exit
+   code*, and the child exited 0 whether the mount failed or not — so the row
+   printed `OK` directly above the grandchild's `FAIL errno=1 EPERM` line, in
+   `results/census.txt` and in `real/probe-census.txt` alike. `check` now exits
+   non-zero on failure and the row reports `FAIL exit status 1` **[V]**
+   (`experiments/results/census.txt`). §3.4's conclusion never rested on that row —
+   the bwrap differential carries it — and it holds either way. The committed target
+   capture still shows the pre-fix `OK`, because it was taken before the fix; it has
+   not been re-taken on the target.
+2. The chown probes wrote their target file to `/tmp/cprobe`, which is also where
+   `run.sh` compiles the C probe. Running the census therefore truncated the C
+   probe to an empty, mode-0644 file, and the next invocation reported
+   `/tmp/cprobe: Permission denied` — which is the entire content of
+   `verification/real/cprobe.txt`. The chown target is now `/tmp/chown-probe-target`.
+3. A third row was not wrong but was uninterpretable: `write into uid-1000-owned
+   dir` needs a fixture only something that can `chown` may build, and when the
+   fixture was missing the probe reported the resulting `ENOENT` as though it were
+   a denial. It now reports `SKIP` with the reason, and `check` exits 2 for it, so
+   "not measured" can never again be read as "denied".
+
+The general lesson is the one §10.2 already states, turned on the instrument
+itself: **a probe must report the verdict of the operation it names, and must
+distinguish "denied" from "could not run".** Any harness that takes a verdict from
+an exit code, a leftover fixture, or a shared temporary path is measuring itself.
 
 ### 3.7a Second-session extensions (2026-09-07, same runtime class)
 
@@ -373,27 +486,100 @@ A second target session, held to test seven further tools at their claims
    yes; write child memory — no.** pathshim and sandlock (§11a) are field
    measurements of exactly that boundary.
 
+### 3.7b The reconstruction: the target's shape, on an ordinary host
+
+Everything in §3.7 and §3.7a was a single observation of a machine no reader can
+reach. `experiments/` closes most of that gap. It builds a container whose mount
+topology is taken from `verification/real/mountinfo.txt` — a tmpfs root owned by uid
+1000, a 64 MiB tmpfs `/tmp`, a 256 MiB `/dev/shm`, six bind-mounted device nodes and
+no others, `/usr` `/lib` `/lib64` `/bin` `/sbin` from the host tree, individually
+bound `/etc` files and therefore **no `/etc/passwd`**, no `/run`, no `/var`, no
+`/dev/fuse`, no `/dev/ptmx`, no `/sys` — then pivots into it and applies N, F and,
+where the kernel has Landlock, M.
+
+`30-attribution-census.sh` runs the census and the discriminating probes inside it
+and checks every row against a written-down expectation. On the host these results
+were taken: **34 rows matched, none failed, three skipped.** **[V]**
+(`experiments/results/assertions.txt`)
+
+What that settles, that a target transcript could not:
+
+- The identity block, including the `0 1000 1` map, is reproducible from a script
+  (§3.1).
+- The whole of §3.3's N+F column is reproducible, now with the correct map.
+- §3.7a's central technique — the bogus-argument probe — is reproducible, and so is
+  its conclusion for every row that does not need M: `mount`, `umount2`,
+  `pivot_root`, `unshare` and `process_vm_readv` answer `EPERM` for arguments the
+  kernel would reject with a path- or pid-shaped errno, while `pidfd_getfd` answers
+  `EBADF` and `move_mount` answers `ENOENT`. Filtered and executed are separable
+  without access to the filter.
+- F16 was found this way: the model's `fsopen`/`fsmount` failed `EPERM` where the
+  target's succeeded, and the difference was the mount namespace, not the filter.
+
+What it does not settle, and this is the honest limit: **the three M rows.** The
+kernel these results were taken on is a Firecracker guest with
+`CONFIG_SECURITY_LANDLOCK` unset, so `landlock_create_ruleset` returns `ENOSYS` and
+the mechanism cannot be applied at all. The script reports those rows `SKIP` and
+exits 2 rather than passing a run that never tested them. On any distro kernel —
+Debian, Fedora, Arch, Ubuntu 20.04 or later — Landlock is present and the gap
+closes. Until someone runs it there, M's attributions rest on the target captures
+**[T]** and on kernel source **[S]**, never on **[V]**.
+
 ---
 
 ## 4. Method
 
+Three instruments, answering three different questions. Each is committed and
+runnable; no number in this paper comes from a transcript alone.
 
-The harness (`verification/`) builds the model of §3.2 and runs each experiment under
-selectable configurations. Its design principle is that **a denial observed under
-both mechanisms tells you nothing about which caused it**, so every ambiguous error
-is re-run with one denial removed at a time.
+| | what it is | what it answers |
+|---|---|---|
+| `verification/` | the **model harness**: builds §3.2's mechanisms around a program and runs each experiment under selectable configurations | which mechanism produces which denial, by removing one at a time |
+| `verification/real/` | **target captures**, taken on the runtime itself on 2026-09-07 | what the actual machine does — one observation, not repeatable |
+| `experiments/` | the **reconstruction**: rebuilds the target's identity, mount topology and filter in a container and asserts every row | whether the model's claims survive on a machine a reader controls (§3.7b) |
+
+The model harness's design principle is that **a denial observed under two
+mechanisms tells you nothing about which caused it**, so every ambiguous error is
+re-run with one denial removed at a time.
 
 ```sh
 ./verification/run.sh                       # all sections
 ./verification/run.sh census bwrap podman   # selected
+
+./experiments/10-build-target-image.sh      # the reconstruction, then
+./experiments/30-attribution-census.sh      # census + assertions, exit 0/1/2
 ```
 
-Individual toggles — `CONFINE_ALLOW_UNSHARE`, `CONFINE_ALLOW_MOUNT`,
-`CONFINE_ALLOW_PTRACE`, `CONFINE_DENY_CLONE_NS`, `CONFINE_DENY_SETGROUPS`,
-`CONFINE_DENY_MKNOD`, `CONFINE_DENY_CHOWN_NONZERO`, `CONFINE_DENY_SETUID_NONZERO` —
-add or remove one rule at a time. Captured output is in `verification/results/`.
+Individual toggles — `CONFINE_USERNS`, `CONFINE_MAP_HOSTID`, `CONFINE_MOUNTNS`,
+`CONFINE_LANDLOCK`, `CONFINE_ALLOW_UNSHARE`, `CONFINE_ALLOW_MOUNT`,
+`CONFINE_ALLOW_PTRACE`, `CONFINE_DENY_PROCESS_VM`, `CONFINE_DENY_CLONE_NS`,
+`CONFINE_DENY_SETGROUPS`, `CONFINE_DENY_MKNOD`, `CONFINE_DENY_CHOWN_NONZERO`,
+`CONFINE_DENY_SETUID_NONZERO` — add or remove one rule at a time.
 
-Tool revisions used for **[S]** claims and for the reproductions:
+### 4.1 The instrument is part of the result
+
+Two rules follow from §3.7's verdict bugs, and they are why the probes are
+structured the way they are.
+
+**Every probe runs in a disposable child**, because an operation that succeeds
+mutates the prober. **Every probe reports the verdict of the operation it names**,
+not a proxy for it: `probe check` exits 1 on a denial and 2 when a precondition is
+missing, so a parent that re-execs it — the `in clone(NEWNS)` row — reads a real
+answer, and a missing fixture can never be mistaken for a denial.
+
+The bogus-argument probes (`probe attribute`) are the second session's
+methodological contribution, moved out of ad-hoc target-side C and into the
+instrument. A seccomp filter sees the syscall number and six argument registers,
+cannot dereference a pointer, and runs before the syscall body. So one call
+separates the mechanisms: a path- or pid-shaped errno for a deliberately bogus
+argument means the syscall **executed**, and `EPERM` for the same argument means it
+was refused **before entry**. Every F-versus-M attribution in §3.7a rests on that
+one asymmetry, and the controls (`pidfd_getfd`, `kcmp`) are there to show the probe
+can see the difference.
+
+### 4.2 Revisions
+
+Pinned inputs for the **[S]** claims and the reproductions:
 
 | Tool | Revision | How obtained |
 |---|---|---|
@@ -403,12 +589,19 @@ Tool revisions used for **[S]** claims and for the reproductions:
 | libarchive | 3.6.2-1+deb12u5 | `debian:bookworm` package |
 | Go | 1.24.7 | toolchain in use |
 | Apptainer | `6099bb1e979b0c424d923c2dcef9c4ea05732cce` | source, for the `proot` question |
+| Linux | `v6.18` tag, `fs/namespace.c`, `security/landlock/fs.c`, `security/landlock/syscalls.c` | git.kernel.org blob |
+| udocker | `638bc42f236e29a85368b38d21e49940c5908dfe` | source |
+| pathmap | `98b3d2aef724249f71bb96d4235872407f21bf54` | source, built and run (§9.3) |
+| memfd-exec / ulexec | `9708cb7e6e2c9cc8d7e7976d7d5f2249998ca78d` / `00934f882ae204aa7007b816a430e885559da4cc` | source, read only |
 | onelf, dwarfs, runimage | repository `HEAD` at 2026-09-07 | source only |
 | `archlinux:latest`, `alpine:latest` | digests as pulled 2026-09-07 | registry |
+| `debian:bookworm` | `sha256:6ebd97fa83deb272194a2cf015b3d26a4d538e9ad3a7a79d544c8af5b0a01443` | the reconstruction's base |
 
-The model is not the runtime. It reproduces the runtime's observable behaviour on
-every operation we can check, which is what licenses the attributions in §3.3 and
-the differentials in §5–§8. It cannot authenticate the **[R]** material.
+The model is not the runtime, and neither is the reconstruction. Together they
+reproduce the runtime's observable behaviour on every operation we can check except
+the three that need an LSM this host does not have, which is what licenses the
+attributions in §3.3 and the differentials in §5–§8. Neither can authenticate the
+**[R]** material.
 
 ---
 
@@ -493,12 +686,22 @@ An adaptation that replaces lilipod's namespace machinery with `chroot(2)` is
 reported to support `pull`, `run`, `create`, detached `start`, `ps`, `stop`, `rm`,
 `logs` and copy-in volumes, while `exec` and PTY allocation remained broken. **[R]**
 The v1 patch was unpublished at review time; **as of 2026-09-07 the v2 patch is
-published** (`patches/lilipod-restricted-v2.diff`, 532 insertions across 5 files; v2.2 adds per-layer OCI whiteout application, v2.3 adopts docker's always-install-host-resolv.conf semantics)
-and its lifecycle results are reproduced on the target
-(`verification/real/lilipod-v2-lifecycle.txt`): with the v2 corrections below,
-`exec` **works**, and per-container hostnames work through `clone(CLONE_NEWUTS)`.
-PTY allocation remains unavailable. Two components of the v1 patch were wrong or
-incomplete, as this review predicted:
+published** (`patches/lilipod-restricted-v2.diff`, +532/−34 across 5 files; v2.2
+adds per-layer OCI whiteout application, v2.3 adopts docker's
+always-install-host-resolv.conf semantics) and its lifecycle results are captured on
+the target **[T]** (`verification/real/lilipod-v2-lifecycle.txt`): with the v2
+corrections below, `exec` **works**, and per-container hostnames work through
+`clone(CLONE_NEWUTS)`. PTY allocation remains unavailable.
+
+One thing that capture shows and no summary of it should hide: **the lifecycle is
+racy.** The file holds two runs of the same script; in the first, `ps` printed only
+its header and `exec` printed nothing, because the detached `start` had not come up
+within the script's three-second sleep. The second run, identical but for the
+container name, printed `EXEC-WORKS` and the container's own hostname. `exec` works;
+a supervisor that decides a container is running by sleeping and then looking does
+not. §10.6 is what replaces that, and this is the failure it is written against.
+
+Two components of the v1 patch were wrong or incomplete, as this review predicted:
 
 - **`Credential` need not be dropped.** `Credential.NoSetGroups = true` suppresses the
   `setgroups` call and nothing else; it is a no-op on unrestricted hosts, where
@@ -605,7 +808,15 @@ OCIRuntime=crun driver=vfs
 ```
 
 **[V]** This corrects both the "missing directories" diagnosis and the "no path
-exists" verdict.
+exists" verdict — as an architectural claim. It is not a recipe, and the target says
+so: podman 5.8.2 there dies with a bare `Error: no such file or directory` even
+given `--storage-driver vfs` and explicit `--root`/`--runroot` **[T]**
+(`verification/real/podman-vfs-target.txt`). Two readings survive that pair, and the
+evidence does not choose between them: the newer podman requires something further
+that this runtime withholds, or it fails for an unrelated reason its diagnostic does
+not name. What the pair *does* establish is the narrower and more useful claim —
+**the storage driver, not the directory layout, is what stops podman initializing**,
+and a bare `ENOENT` from podman is not evidence about paths.
 
 **The real wall is layer application, and it peels back to the ownership wall.**
 Loading a local image (no registry, no network) under successively weaker models:
@@ -935,13 +1146,21 @@ or whose `..` components climb above the package root
 the bundle, even though it dangles — while the real Arch form,
 `/etc/mtab -> /proc/mounts`, is refused for being absolute. A measured
 `archlinux:latest` rootfs (137 packages) holds 1,326 symlinks, 6 of them absolute.
-**[V]** The reported bundle (210 packages) held, per the original sanitizer's own
-output, **0 absolute and 1,558 in-bundle relative links, with 26 escaping or
-dangling-relative links dropped** — the reported figure of "26 absolute" was a
-misreading of that log **[R]**; the manifest was never published, so the
-transformation remains unauditable. Rewriting or dropping absolute links changes the userspace's behaviour
-after chroot, where those links would have been correct, so the transformation is
-exactly the thing that needs recording.
+**[V]** An earlier revision of this paper said the reported bundle (210 packages)
+"is said to hold 1,558 relative and 26 absolute links". That is a misreading, and
+the correction matters because it changes which onelf rule was being hit. What the
+original account actually says is that the rootfs "contains 26 such symlinks (all
+pointing at paths that only exist via mounts, e.g. `/etc/mtab → ../proc/self/mounts`)
+and 1,558 legitimate relative ones", where "such" refers to links whose *targets
+escape the package root* **[R]**. So the 26 are described as escaping, not as
+absolute — and the one example given is **relative**, and by onelf's own rule
+(`symlink_target_within_root`) `etc/mtab -> ../proc/self/mounts` resolves inside the
+bundle and would be **accepted**, dangling or not **[S]**. Either the count, the
+category, or the example is wrong in the original, and no manifest was published to
+say which. The substantive point stands and is strengthened: **a transformation
+nobody can audit is the thing that needed recording**, because rewriting or dropping
+links changes the userspace's behaviour after chroot, where those links would have
+been correct.
 
 **Sizes.** The reported artifact is 225,641,729 bytes = **215.1887 MiB** =
 **225.6417 MB**. **[V]** onelf's displayed `Output: 215.2 MB` is therefore MiB, and
@@ -1069,6 +1288,31 @@ arguments that way — `/proc/<pid>/mem` read-only is the surviving channel — 
 supervisor that falls back silently instead of saying so produces false safety
 reports (§3.7a, §11a: pathshim vs. sandlock).
 
+**What the tier does and does not buy, measured.**
+[pathmap](https://github.com/VHSgunzo/pathmap) (`98b3d2a`) is unusually convenient
+evidence because it ships both halves of the interpose tier in one repository — an
+`LD_PRELOAD` library covering 129 path-taking libc entry points, and a `ptrace`
+tracer that reads the same arguments out of the child with `process_vm_readv`. Run
+unmodified inside the reconstruction **[V]**
+(`experiments/results/interpose-tier.txt`):
+
+| | result |
+|---|---|
+| `PATH_MAPPING=/mapped:/tmp/iv/real` + preload, `cat /mapped/marker` | **works** — a path that exists nowhere resolves to the real one, with no `mount(2)` anywhere |
+| `chown 0:42` under the same preload | **still `EINVAL`** — identical to the bare call |
+| the `ptrace` tracer, same mapping | **dead** — `PTRACE_TRACEME: Operation not permitted` |
+| `memfd_create` + `fexecve` | **OK** |
+
+Three things follow, and the second is the one that gets assumed away. A libc
+interposer *does* deliver a per-process bind view without any mount privilege at
+all, which is the honest answer to "volumes are copy-in only". It does **not**
+deliver ownership: mapping a path still hands the kernel the caller's real uid and
+gid, so the §9.1 wall stands until the same library also answers `chown` the way
+fakeroot does — path virtualization and ownership virtualization are separate jobs
+that the word "interposition" hides. And the tracer half is dead for exactly the two
+reasons §3.7a names, in one tool, at one commit: a design that offers both routes
+loses one of them here.
+
 ### 9.4 Mounts: available namespace, unusable mount
 
 `clone(CLONE_NEWNS)` succeeds and `mount(2)` fails, in the fresh namespace as well as
@@ -1077,6 +1321,27 @@ regardless of namespace acrobatics: bubblewrap's `MS_SLAVE`, podman's overlay dr
 and its `ApplyLayer` remount, Apptainer's image mount, `pivot_root`'s mount-point
 requirement, and FUSE (which additionally needs `/dev/fuse`, uncreatable because
 `mknod` needs `CAP_MKNOD` in the **initial** user namespace, §3.3).
+
+**The split is finer than "mounts fail", and the finer version is what a runtime
+must probe.** The new mount API divides cleanly along *creation* versus *attachment*
+(F13):
+
+| | operation | verdict | mechanism |
+|---|---|---|---|
+| create | `fsopen`, `fsconfig(CMD_CREATE)`, `fsmount`, `open_tree(OPEN_TREE_CLONE)` | **permitted** | — |
+| configure | `mount_setattr`, propagation changes included | **permitted** | — |
+| attach | `mount(2)`, `pivot_root(2)` | denied pre-execution | **F** |
+| attach | `move_mount(2)` | denied inside the kernel | **M** |
+| use | `openat` on a detached mount fd | `EACCES` | **M** |
+
+So a process here can build a filesystem, configure it, and hold an fd to it — and
+can never put it anywhere, nor open anything through it. Two consequences worth
+stating plainly, because both invert an assumption. `may_mount()` **passes** (that
+is what `fsmount` succeeding proves), so no mount denial here is a capability
+problem and no amount of capability acquisition fixes one. And the last row closes
+the obvious workaround: a detached mount is not a usable private filesystem, because
+a path-resolving LSM cannot resolve a path into one, so every access through it is
+refused regardless of the mount's own permissions.
 
 ---
 
@@ -1097,9 +1362,20 @@ when isolation is unavailable — never silently degrade.
 | Mode | Requires | Provides | Never claims |
 |---|---|---|---|
 | `namespace` | a working combination of namespace creation, mounts, ID maps and the requested controls | isolation as configured | — |
+| `supervise` | a seccomp notification listener, `SECCOMP_IOCTL_NOTIF_ADDFD`, and a working channel for reading the child's arguments | mediation of the syscalls it can read: deny, allow, substitute an fd | anything it cannot read the arguments of; on this runtime, exec remapping |
 | `chroot` | `CAP_SYS_CHROOT`, a prepared rootfs, payload syscalls permitted | path-root change inside the outer environment | process, network, IPC or mount isolation |
 | `interpose` | dynamically linked payloads, sufficient libc coverage | path and metadata emulation for cooperative programs | any security property |
 | `unsupported` | — | a diagnostic naming the unmet requirement | — |
+
+`supervise` sits between `namespace` and `chroot` because it can *deny*, which
+`chroot` cannot, while providing no namespace. It is listed as a mode rather than an
+implementation detail for one reason: it is the only tier in this table whose
+failure mode is silent by default. Its argument-reading channel can disappear
+(§3.7a: `process_vm_readv` filtered) while its listener keeps working, and a
+supervisor whose per-syscall fallback is "continue" then reports success for
+mediation it never performed (§11a: sandlock's `--dry-run`). A `supervise` mode must
+therefore probe all three legs — listener, `ADDFD`, argument read — and refuse the
+tier when any is missing, never fall back per call.
 
 ### 10.2 Probe protocol
 
@@ -1116,23 +1392,52 @@ tightly.
 3. **Never probe `unshare(CLONE_NEWUSER)` from a multithreaded process.** It returns
    `EINVAL` unconditionally. Use a single-threaded helper or `clone(2)` (§3.5).
 4. **Use discriminating arguments.** `mknod(S_IFCHR, makedev(0,0))` is a whiteout and
-   tests nothing; use a real device number (§3.5).
+   tests nothing; use a real device number (§3.5). Running both is better than
+   running one: a whiteout that succeeds where a real device number fails, *in the
+   same directory*, proves the denial is capability-based and not path-based, because
+   no path-scoped policy can distinguish two device numbers at the same path.
 5. **Record the errno, not a boolean.** `EPERM` and `EINVAL` from the same call mean
    different things: `EINVAL` from `setuid`/`chown` points at an unmapped ID and
    therefore at a *mapping* fix; `EPERM` points at a policy.
 6. **Read the mapping directly when it is available.** `/proc/self/uid_map`,
    `/proc/self/gid_map` and `/proc/self/setgroups` answer in one read what a dozen
    probes infer. Their contents belong in the diagnostic.
+7. **Separate "the filter refused" from "the kernel refused", with a bogus
+   argument.** Call the same syscall with an argument the kernel rejects inside the
+   syscall body — a path that cannot exist, a pid that cannot exist, a closed fd. A
+   path- or pid-shaped errno means the call executed and the denial is downstream
+   (an LSM, a capability check, a state check); `EPERM` for the same argument means
+   a filter refused it before entry. This one asymmetry carries every attribution in
+   §3.7a, costs one syscall per question, and needs no privilege. Carry the controls
+   with it (`pidfd_getfd(-1,-1)` → `EBADF`, `kcmp(-1,…)` → `ESRCH`) so a probe that
+   has stopped discriminating says so.
+8. **Probe creation and attachment separately.** `mount(2)` failing does not mean
+   `fsopen`/`fsmount` fail, and on this runtime they do not (§9.4). A runtime that
+   asks only the old question learns less than one syscall's worth more effort would
+   have told it.
+9. **A verdict must be the operation's, and "could not run" must not read as
+   "denied".** Never take a verdict from a child's exit code unless the child sets
+   it from the operation; never let a missing fixture report as a denial. Both
+   mistakes were live in this paper's own harness (§3.7).
 
 Minimum probe set, each in its own child:
 
 ```
-clone(CLONE_NEWNS) | clone(CLONE_NEWUSER) | unshare(CLONE_NEWNS) [1 thread]
+clone(CLONE_NEWNS) | clone(CLONE_NEWUSER) | clone(CLONE_NEWUTS) + sethostname
+unshare(CLONE_NEWNS) [1 thread]
 mount(tmpfs) in the current ns | mount(tmpfs) inside clone(CLONE_NEWNS)
-pivot_root | chroot | mknod(S_IFCHR, makedev(1,3)) | ptrace(PTRACE_TRACEME)
+fsopen+fsmount(tmpfs) | open_tree(CLONE) | move_mount -> real dest
+mount(2) / move_mount with a bogus path   [the filter-vs-kernel discriminator]
+process_vm_readv(bogus pid) | pidfd_getfd(-1,-1)   [control]
+pivot_root | chroot | mknod(S_IFCHR, makedev(1,3)) | mknod(S_IFCHR, 0) [pair]
+ptrace(PTRACE_TRACEME) | seccomp(NEW_LISTENER) | open /proc/self/mem O_RDONLY, O_RDWR
 setuid(nonzero) | setgroups(0,NULL) | chown(f, 0, <a gid the image uses>)
 memfd_create + exec from it | write into a directory owned by an unmapped id
+write into each directory the workload needs   [the allowlist, if there is one]
 ```
+
+`verification/probe` implements this set (`probe census`, `probe attribute`); it is
+the reference, not a sketch.
 
 ### 10.3 Payload classification
 
@@ -1227,7 +1532,12 @@ a path any writable payload can create.
 
 - **Volumes.** If the implementation copies, call it a copy, document when it
   synchronizes, and **reject** `:ro` rather than accepting a flag that is not
-  enforced.
+  enforced. A per-process bind *view* is available to the `interpose` tier without
+  any mount privilege — §9.3 measures one working on this runtime — and it is a
+  genuinely better volume than a copy for payloads the interposer reaches. It is
+  still not a mount: it is invisible to any process the interposer does not cover,
+  which includes every static and every Go payload, so a runtime that offers it must
+  say which payloads got it and must not present it as `-v` with mount semantics.
 - **`/proc` and `/sys`.** A static fixture can satisfy a program that only reads a
   mount table (§7.1) and nothing more. Generate it from the real topology where
   possible, never ship someone else's device numbers, and fail loudly for anything
@@ -1277,12 +1587,13 @@ Only results from this study. **Not reached** means an earlier stage failed;
 | | Image acquisition | Rootfs preparation | Workload launch | Package management | Blocking wall |
 |---|---|---|---|---|---|
 | **lilipod, stock** | pull works **[V]** | not reached | fails **[V]** | not reached | `setgroups` in `EnsureFakeRoot`'s re-exec (§9.2) |
-| **lilipod, chroot adaptation (v2)** | works on target **[V]** | ownership-neutral extraction **[V]** | full lifecycle incl. `exec` on target **[V]**; hostname isolation via `clone(NEWUTS)` **[V]** | `apk --version` only **[R]** | PTY unavailable; patch published (`patches/`) |
+| **lilipod, chroot adaptation (v2)** | works on target **[T]** | ownership-neutral extraction **[T]** | full lifecycle incl. `exec` on target **[T]**, racy under a fixed sleep (§5.4); hostname isolation via `clone(NEWUTS)` **[T]** | ten distro package managers **[T]** (§8.3) | PTY unavailable; patch published (`patches/`) |
 | **Podman, rootless** | — | — | — | — | `setuid(nonzero)` = `EINVAL` **[V]** |
-| **Podman, rootful** | init OK with `vfs` **[V]** | layer apply fails **[V]** | not reached | not reached | mount ns → mount → unmapped-gid `lchown` (§6) |
+| **Podman, rootful** | init OK with `vfs` on 4.3.1 **[V]**; 5.8.2 dies at init with a bare `ENOENT` **[T]** | layer apply fails **[V]** | not reached | not reached | mount ns → mount → unmapped-gid `lchown` (§6) |
 | **Apptainer** | OCI fetch + SIF conversion proceed **[R]** | ownership restore fails **[R]** | not reached | not reached | unmapped-gid `lchown` (§9.1); mount/FUSE barriers *expected* |
 | **runimage, normal launcher** | bundled | extraction OK on a filesystem with room **[R]** | fails **[V][S]** | not reached | `mount(MS_SLAVE, /)` after a successful clone (§8.1) |
 | **rootfs via plain chroot** | bundled | directory rootfs **[V]** | selected utilities run **[V]** | **signed installs work** after two fixes **[V]** | no `/proc`, `/sys`, devices, PTY, mounts, ID range |
+| **interpose tier (pathmap preload)** | n/a | n/a | bind view without `mount(2)` **[V]** (§9.3) | not reached | ownership: `chown` still `EINVAL`; the `ptrace` half is dead (F) |
 | **rootfs via chroot + onelf** | bundled | packaging reported **[R]** | packaged commands reported **[R]** | reported **[R]** | as above, plus outer `/bin/sh` + `chroot` + writable space |
 
 The pattern is consistent: **the image and registry plane is ordinary userspace I/O
@@ -1297,6 +1608,15 @@ Seven more tools were run at their claims on the target — fetched as source, b
 where a build was possible (C: gcc on the runtime; Rust: 1.98.1 via rustup to
 `/workspace`), executed unmodified. Evidence: `verification/real/ext*.txt`. The
 session also produced the kernel findings F13–F14 recorded in §3.7a.
+
+Every row of the table is **[T]**: one session, one machine, not repeatable here.
+Where a row's *mechanism* was checked against upstream source it is marked **[S]**
+in the text, and udocker's two are — its ownership-neutral extraction
+(`container/structure.py` `_untar_layers`, which passes `--no-same-owner
+--no-same-permissions --exclude=.wh.*` and applies whiteouts itself) and its
+no-`/etc/passwd` remap (`helper/hostinfo.py` `username()` returning `""` on
+`KeyError`, consumed by `engine/base.py`'s user resolution) both read exactly as
+reported, at `638bc42`.
 
 | Tool (revision) | Claim tested | Result on the target | Blocking wall |
 |---|---|---|---|
@@ -1323,22 +1643,48 @@ ownership wall now has a fifth tenant** — rurima's `tar -xpf`-as-root extracti
 joins lilipod's tar, containers/storage's applier, Apptainer's Go unpacker and
 pacman's `DownloadUser`: extraction code written for real root cannot be rescued
 by privileges this runtime grants — only ownership-neutral extraction (udocker,
-lilipod v2) or interposition (fakechroot) clears it.
+lilipod v2) or interposition (fakechroot) clears it. §9.3 sharpens the last clause:
+it is specifically *ownership* interposition that clears it. A path interposer, even
+a thorough one, does not.
 
 ---
 
 ## 12. Limitations
 
-The measurements here come from a model of the target runtime, not the runtime. The
-model reproduces its behaviour on every operation we could check and its identity
-block byte for byte, which is what supports the attributions in §3.3 and the
-differentials in §5–§8. It cannot establish that the target's filter contains exactly
-the rules in §3.2, only that a filter with those rules plus a partial ID map produces
-what the target produced. *That gap is now closed: the target's `/proc/self/uid_map`,
-`gid_map` and `setgroups` were read on 2026-09-07 (§3.1,
-`verification/real/identity.txt`), and the bare census ran on the target itself
-(§3.7) — the model's attributions held, with the map corrected to `0 -> 1000` and
-the write-scope mechanism added (§3.3, §3.7).*
+**What this paper has not established.** Stated first, because a reader skimming for
+the conclusion will not reach an appendix.
+
+- **Mechanism M is not verified anywhere a reader can re-run.** The write allowlist,
+  the `move_mount` denial and the `/proc/pid/mem` O_RDWR refusal rest on one target
+  session **[T]** plus kernel source **[S]**. The reconstruction can model M with a
+  Landlock ruleset, but the kernel these results were taken on has no Landlock, so
+  those three rows are `SKIP` (§3.7b). This is the largest open gap in the paper and
+  it closes on any distro kernel.
+- **The target's filter is inferred, never dumped.** The identity block, the maps
+  and `setgroups` were read directly (§3.1) and every listed syscall was probed, but
+  no policy dump exists. A filter containing *additional* rules that nothing here
+  exercises would be invisible.
+- **Nothing in §11a is repeatable.** Seven tools, one session, one machine; only the
+  source-level mechanisms behind two of them were checked at a commit.
+- **The extended corpus was not re-run after the harness fixes of §3.7.** The target
+  captures are as taken.
+- **No timing in this paper is a benchmark**, and none is quoted as one.
+- **How many claims a previous revision got wrong** is the only honest estimate of
+  how many are still wrong. This revision corrected six: the patch's line count, a
+  symlink category, a probe row that reported an exit code, a probe that overwrote
+  its own C counterpart, a "vfs initializes" result quoted without the target's
+  contradicting one, and a model that lacked the mount namespace its own conclusions
+  needed (F16). Assume more remain.
+
+The measurements here come from a model of the target runtime and from a
+reconstruction of it, not from the runtime. Together they reproduce its behaviour on
+every operation we could check except the three that need an LSM the reconstruction's
+host lacks, and its identity block byte for byte, which is what supports the
+attributions in §3.3 and the differentials in §5–§8. The gap §12 named in the
+previous revision — that no one had read the target's maps — is closed: they were
+read on 2026-09-07 (§3.1), the bare census ran on the target itself (§3.7), and the
+model's attributions held once the map was corrected to `0 -> 1000`, the mount
+namespace added (F16), and the write-scope mechanism admitted (§3.3, §3.7).
 
 The **[R]** material — the lilipod patch, the runimage payload, the onelf bundle, and
 every timing — was never published and is not reproducible. This paper attaches no
@@ -1356,10 +1702,15 @@ pacman and its configuration; other package managers will have their own.
 One runtime, one architecture, one kernel version. The seccomp profile studied is one
 point in a space; §10's probe protocol is designed not to assume otherwise.
 
-§10 is a specification, not an implementation. Its central bet — that path
-virtualization at the libc boundary covers enough real workloads to be worth building
-— is supported here only by the unmodified success of dynamic payloads under a real
-`chroot` (§8.3), which is a weaker result than it needs.
+§10 is a specification, not an implementation; `TOOL.md` is the build order derived
+from it, and it too has been implemented by nobody. Its central bet — that path
+virtualization at the libc boundary covers enough real workloads to be worth
+building — is now supported by more than it was: dynamic payloads run unmodified
+under a real `chroot` (§8.3), udocker's fakechroot engine completes package installs
+on the target **[T]** (§11a), and a stock preload delivers a bind view with no mount
+privilege at all **[V]** (§9.3). It is still short of what it needs, and §9.3 names
+the specific shortfall: the same measurement that shows the tier working shows it
+**not** clearing the ownership wall, which is the wall that stops the most tools.
 
 ---
 
@@ -1417,6 +1768,27 @@ tree sandbox) complete the measured corpus: the former is a sound CLI-honesty
 layer over a dead-here engine, the latter an unshare/mount architecture with no
 fallback — the §8.1 wall, one project later.
 
+Three further projects supply mechanisms rather than architectures, and each maps
+onto one rung of §10's ladder:
+
+- **[pathmap](https://github.com/VHSgunzo/pathmap)** (`98b3d2a`, C, MIT) is the
+  `interpose` tier's reference implementation and the one baseline in this paper that
+  was **run** rather than read: 129 interposed libc entry points, `*at` resolution
+  through `/proc/self/fd`, and reverse mapping so `getcwd`, `readdir`, `readlink` and
+  `realpath` report the virtual names back. §9.3 measures it inside the
+  reconstruction: the preload half delivers a bind view with no mount privilege, and
+  does not touch ownership; the `ptrace` half is dead here. It ships both halves,
+  which is what makes it a measurement of the tier rather than of one tool.
+- **[memfd-exec](https://github.com/VHSgunzo/memfd-exec)** (`9708cb7`, Rust) is a
+  `std::process::Command`-shaped API over `memfd_create` + `fexecve`. It is the
+  §8.4 memfd rung as a library, and `memfd_create+exec` is permitted here **[V]**.
+- **[ulexec](https://github.com/VHSgunzo/ulexec)** (`00934f8`, Rust, MIT) loads and
+  runs an ELF from memory — over `memfd-exec`, or over `userland-execve` when even a
+  memfd is unwanted — and is the practical form of the relocation problem
+  [sharun](https://github.com/VHSgunzo/sharun) solves. It belongs to the same
+  lineage: it solves *getting a binary to run from nowhere*, not filesystem
+  virtualization, and it is not a substitute for either.
+
 [fakeroot](https://tracker.debian.org/pkg/fakeroot) virtualizes file ownership through
 the same interposition mechanism and is the model for §10.4's sidecar.
 [PRoot](https://proot-me.github.io) intercepts through `ptrace`, which this runtime
@@ -1458,6 +1830,26 @@ model, the toggles, and what each section answers.
 | `lookpath` | Go path resolution across a chroot; the `/dev/null` trap | §5.5 |
 | `arch` | a distribution rootfs by chroot; the two pacman preconditions; `/etc/mtab` | §8.3 |
 | `sources` | the upstream lines the `[S]` claims rest on | §5, §8.1, §8.4, §9.2 |
-| `verification/real/` | target-run evidence: identity, bare census, spawn/interpose/lookpath, writability, bwrap, pacman.conf, lilipod v2 lifecycle | §3.1, §3.7, §5.4, §5.5, §8.3 |
-| `verification/real/ext*.txt` | second target session: kernel-feature survey (new mount API, notif/ADDFD, memory-access split) and the seven-tool extended corpus | §3.7a, §11a |
+| `verification/real/` | target-run evidence **[T]**: identity, bare census, spawn/interpose/lookpath, writability, bwrap, pacman.conf, lilipod v2 lifecycle | §3.1, §3.7, §5.4, §5.5, §8.3 |
+| `verification/real/ext*.txt` | second target session **[T]**: kernel-feature survey (new mount API, notif/ADDFD, memory-access split) and the seven-tool extended corpus | §3.7a, §11a |
 | `arithmetic` | unit and size conversions | §8.4 |
+
+And the reconstruction, which asserts rather than reports:
+
+```sh
+./experiments/10-build-target-image.sh      # the target's userspace, pinned by digest
+./experiments/20-enter-target.sh            # a shell inside its reconstructed shape
+./experiments/30-attribution-census.sh      # census + assertions; 0 pass, 1 fail, 2 skipped
+./experiments/40-language-selection.sh      # the four properties podbox needs from a language
+./experiments/50-interpose-tier.sh          # pathmap against the four walls
+```
+
+| Script | Establishes | Paper |
+|---|---|---|
+| `10-` | the target's userspace: what it has and what it lacks | §3.6 |
+| `20-` | the target's kernel-visible shape, and which mechanism this host refuses | §3.1, §3.2, §3.7b |
+| `30-` | every attribution row, checked against a written expectation | §3.3, §3.7a, §3.7b |
+| `40-` | static linkage, thread count, interposer reach, artefact size, per language | `TOOL.md` §3 |
+| `50-` | the interpose tier: bind view yes, ownership no, `ptrace` half dead | §9.3 |
+
+`experiments/README.md` states what the reconstruction cannot reproduce and why.

@@ -7,6 +7,7 @@
 //	probe id                 identity, capability and seccomp status
 //	probe census             run every check, one child each
 //	probe check <name>       run exactly one check in this process
+//	probe attribute          bogus-argument probes: filter vs kernel-internal
 //	probe spawn              Go os/exec credential matrix
 package main
 
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -44,10 +46,10 @@ func spawnCloned(flags uintptr, argv ...string) error {
 }
 
 var checks = map[string]func() error{
-	"unshare(CLONE_NEWNS)":     func() error { return syscall.Unshare(syscall.CLONE_NEWNS) },
-	"unshare(CLONE_NEWUSER)":   func() error { return syscall.Unshare(syscall.CLONE_NEWUSER) },
-	"unshare(CLONE_NEWPID)":    func() error { return syscall.Unshare(syscall.CLONE_NEWPID) },
-	"clone(CLONE_NEWNS)":       func() error { return spawnCloned(syscall.CLONE_NEWNS, "/bin/true") },
+	"unshare(CLONE_NEWNS)":   func() error { return syscall.Unshare(syscall.CLONE_NEWNS) },
+	"unshare(CLONE_NEWUSER)": func() error { return syscall.Unshare(syscall.CLONE_NEWUSER) },
+	"unshare(CLONE_NEWPID)":  func() error { return syscall.Unshare(syscall.CLONE_NEWPID) },
+	"clone(CLONE_NEWNS)":     func() error { return spawnCloned(syscall.CLONE_NEWNS, "/bin/true") },
 	"clone(CLONE_NEWUTS|NEWNS)": func() error {
 		return spawnCloned(syscall.CLONE_NEWUTS|syscall.CLONE_NEWNS, "/bin/true")
 	},
@@ -61,7 +63,7 @@ var checks = map[string]func() error{
 	"mount(MS_SLAVE,/)": func() error {
 		return syscall.Mount("", "/", "", syscall.MS_SLAVE|syscall.MS_REC, "")
 	},
-	"pivot_root(/tmp,/tmp)": func() error { return syscall.PivotRoot("/tmp", "/tmp") },
+	"pivot_root(/tmp,/tmp)":  func() error { return syscall.PivotRoot("/tmp", "/tmp") },
 	"ptrace(PTRACE_TRACEME)": func() error { return raw(syscall.SYS_PTRACE, 0, 0, 0, 0) },
 	// dev must not be 0: mknod(S_IFCHR, 0) is WHITEOUT_DEV, which the kernel
 	// creates without CAP_MKNOD. Probing with 0 tests nothing. 0x103 is 1:3.
@@ -73,21 +75,21 @@ var checks = map[string]func() error{
 		os.Remove("/tmp/wprobe")
 		return syscall.Mknod("/tmp/wprobe", syscall.S_IFCHR|0600, 0)
 	},
-	"setuid(1000)":  func() error { return raw(syscall.SYS_SETUID, 1000) },
-	"setuid(0)":     func() error { return raw(syscall.SYS_SETUID, 0) },
-	"setgid(0)":     func() error { return raw(syscall.SYS_SETGID, 0) },
+	"setuid(1000)":      func() error { return raw(syscall.SYS_SETUID, 1000) },
+	"setuid(0)":         func() error { return raw(syscall.SYS_SETUID, 0) },
+	"setgid(0)":         func() error { return raw(syscall.SYS_SETGID, 0) },
 	"setgroups(0,NULL)": func() error { return raw(syscall.SYS_SETGROUPS, 0, 0) },
-	"chown(f,0,0)":  func() error { return chownProbe(0, 0) },
-	"chown(f,0,42)": func() error { return chownProbe(0, 42) },
+	"chown(f,0,0)":      func() error { return chownProbe(0, 0) },
+	"chown(f,0,42)":     func() error { return chownProbe(0, 42) },
 	"lchown(f,0,42)": func() error {
-		touch("/tmp/cprobe")
-		return syscall.Lchown("/tmp/cprobe", 0, 42)
+		touch(chownTarget)
+		return syscall.Lchown(chownTarget, 0, 42)
 	},
-	"chown(f,1000,0)": func() error { return chownProbe(1000, 0) },
-	"chroot(/tmp)":    func() error { return raw(syscall.SYS_CHROOT, cstr("/tmp")) },
-	"memfd_create":    func() error { return memfdProbe(false) },
+	"chown(f,1000,0)":   func() error { return chownProbe(1000, 0) },
+	"chroot(/tmp)":      func() error { return raw(syscall.SYS_CHROOT, cstr("/tmp")) },
+	"memfd_create":      func() error { return memfdProbe(false) },
 	"memfd_create+exec": func() error { return memfdProbe(true) },
-	"setsid":          func() error { return raw(syscall.SYS_SETSID) },
+	"setsid":            func() error { return raw(syscall.SYS_SETSID) },
 	"prctl(PR_SET_PDEATHSIG)": func() error {
 		return raw(syscall.SYS_PRCTL, 1 /* PR_SET_PDEATHSIG */, uintptr(syscall.SIGTERM))
 	},
@@ -104,16 +106,41 @@ var checks = map[string]func() error{
 	},
 	// The "root squash" observation: a directory owned by an ID that is not
 	// mapped in this user namespace is unwritable even with CAP_DAC_OVERRIDE.
+	//
+	// The fixture has to be built by something that can chown, which the
+	// confined process cannot. When it is absent the probe must say so: an
+	// ENOENT here would otherwise read as a denial and be attributed to a
+	// mechanism, which is the same class of bug as a verdict taken from an
+	// exit code.
 	"write into uid-1000-owned dir": func() error {
-		f, err := os.Create("/tmp/squash-probe/x")
+		if fi, err := os.Stat(squashDir); err != nil || !fi.IsDir() {
+			return errSkip("fixture " + squashDir + " absent; create it as " +
+				"uid 1000 outside the confinement")
+		}
+		f, err := os.Create(squashDir + "/x")
 		if err != nil {
 			return err
 		}
 		f.Close()
-		os.Remove("/tmp/squash-probe/x")
+		os.Remove(squashDir + "/x")
 		return nil
 	},
 }
+
+const (
+	// Distinct from the cprobe binary the harness builds: an earlier revision
+	// used /tmp/cprobe for both, and the census silently truncated the C probe
+	// to an empty 0644 file, so the next run reported "Permission denied"
+	// instead of a census (verification/real/cprobe.txt is that artefact).
+	chownTarget = "/tmp/chown-probe-target"
+	squashDir   = "/tmp/squash-probe"
+)
+
+// errSkip marks a check whose precondition is missing, so that "not measured"
+// never prints as "denied".
+type errSkip string
+
+func (e errSkip) Error() string { return string(e) }
 
 // order fixes the census output so runs are diffable.
 var order = []string{
@@ -140,8 +167,8 @@ func touch(p string) {
 }
 
 func chownProbe(uid, gid int) error {
-	touch("/tmp/cprobe")
-	return syscall.Chown("/tmp/cprobe", uid, gid)
+	touch(chownTarget)
+	return syscall.Chown(chownTarget, uid, gid)
 }
 
 func memfdProbe(execIt bool) error {
@@ -175,6 +202,9 @@ func format(name string, err error) string {
 	if err == nil {
 		return fmt.Sprintf("%-34s OK", name)
 	}
+	if s, ok := err.(errSkip); ok {
+		return fmt.Sprintf("%-34s SKIP %s", name, string(s))
+	}
 	if e, ok := err.(syscall.Errno); ok {
 		return fmt.Sprintf("%-34s FAIL errno=%d %s", name, int(e), errName(int(e)))
 	}
@@ -196,6 +226,10 @@ func errName(e int) string {
 		return "EPERM"
 	case 2:
 		return "ENOENT"
+	case 3:
+		return "ESRCH"
+	case 9:
+		return "EBADF"
 	case 13:
 		return "EACCES"
 	case 19:
@@ -231,6 +265,9 @@ func main() {
 		name := os.Args[2]
 		fn, ok := checks[name]
 		if !ok {
+			fn, ok = attrChecks[name]
+		}
+		if !ok {
 			fmt.Fprintln(os.Stderr, "no such check:", name)
 			os.Exit(2)
 		}
@@ -238,7 +275,11 @@ func main() {
 		fmt.Println(format(name, err))
 		// Exit non-zero on failure so a parent that re-execs this binary
 		// (eg. the "in clone(NEWNS)" mount row) can report the verdict from
-		// the exit code instead of silently succeeding.
+		// the exit code instead of silently succeeding. 2 separates "could
+		// not run" from "ran and was denied".
+		if _, skipped := err.(errSkip); skipped {
+			os.Exit(2)
+		}
 		if err != nil {
 			os.Exit(1)
 		}
@@ -246,6 +287,11 @@ func main() {
 		// One child per check: a check that succeeds cannot leak its effect
 		// into the next one.
 		for _, name := range order {
+			out, _ := exec.Command("/proc/self/exe", "check", name).CombinedOutput()
+			os.Stdout.Write(out)
+		}
+	case "attribute":
+		for _, name := range attrOrder {
 			out, _ := exec.Command("/proc/self/exe", "check", name).CombinedOutput()
 			os.Stdout.Write(out)
 		}
@@ -286,6 +332,9 @@ func main() {
 func printID() {
 	uid, gid := syscall.Getuid(), syscall.Getgid()
 	groups, _ := syscall.Getgroups()
+	// getgroups(2) makes no ordering guarantee; sorting keeps runs diffable,
+	// which is the same reason the census has a fixed order.
+	sort.Ints(groups)
 	fmt.Printf("uid=%d gid=%d groups=%v\n", uid, gid, groups)
 	status, _ := os.ReadFile("/proc/self/status")
 	for _, line := range strings.Split(string(status), "\n") {

@@ -1,0 +1,45 @@
+# The target runtime's *userspace*, as paper_final.md §3.6 describes it.
+#
+# The target is a Gentoo userspace. Debian is used here because it pins
+# reproducibly by digest and carries the same toolchain set; what matters for
+# every experiment in this repository is which tools exist and which files do
+# not, and both are reproduced exactly.
+#
+# Pinned by digest: an image tag measures a different thing each week.
+#
+# The Go toolchain is copied from the official image rather than downloaded in
+# a RUN, so the build needs no egress of its own — which matters behind a
+# TLS-intercepting proxy, where a curl inside the build cannot verify a chain
+# the host trusts.
+FROM golang:1.24.7-bookworm AS gotoolchain
+
+FROM debian:bookworm@sha256:6ebd97fa83deb272194a2cf015b3d26a4d538e9ad3a7a79d544c8af5b0a01443
+
+# What the target has (§3.6): a Go toolchain, a C toolchain, python3, GNU tar,
+# zstd. What it does not have: rust, musl-gcc, a working host package manager
+# once the image is built.
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get -qq update \
+ && apt-get -qq install -y --no-install-recommends \
+      gcc libc6-dev make python3 tar zstd ca-certificates curl file xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=gotoolchain /usr/local/go /usr/local/go
+ENV PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+    GOTOOLCHAIN=local \
+    GOFLAGS=-mod=mod
+
+# The target's `docker` on PATH is a podman alias with no daemon behind it.
+# A tool that probes for docker by looking at PATH must find that, not nothing.
+RUN printf '#!/bin/sh\nexec podman "$@"\n' > /usr/bin/docker \
+ && chmod 0755 /usr/bin/docker \
+ && printf '#!/bin/sh\necho "podman version 5.8.2"\nexit 0\n' > /usr/bin/podman \
+ && chmod 0755 /usr/bin/podman
+
+# 20-enter-target.sh does the filesystem shaping; it needs a place to stand.
+RUN mkdir -p /target /reconstruct
+COPY targetfs.sh /reconstruct/targetfs.sh
+RUN chmod 0755 /reconstruct/targetfs.sh
+
+ENTRYPOINT ["/reconstruct/targetfs.sh"]

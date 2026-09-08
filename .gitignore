@@ -1,1 +1,4 @@
 verification/build/
+experiments/.stage/
+experiments/.langbuild/
+experiments/.interpose/

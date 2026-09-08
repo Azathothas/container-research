@@ -1,29 +1,49 @@
-// confine models the paper's target runtime out of two independent mechanisms
-// and execs a program under it, so that each observed denial can be attributed
-// to the mechanism that actually produces it.
+// confine models the paper's target runtime out of three independent
+// mechanisms and execs a program under it, so that each observed denial can be
+// attributed to the mechanism that actually produces it.
 //
 //	stage 0 (this process)  optionally acquires a supplementary group, then
-//	                        re-execs itself in a user namespace whose ID maps
-//	                        cover only 0->0 (CONFINE_USERNS=1).
-//	stage 1 (the child)     optionally installs a seccomp filter
-//	                        (CONFINE_SECCOMP=1) and execs argv[1:].
+//	                        re-execs itself in a user namespace with a partial
+//	                        ID map (CONFINE_USERNS=1).
+//	stage 1 (the child)     optionally applies a Landlock write allowlist
+//	                        (CONFINE_LANDLOCK), installs a seccomp filter
+//	                        (CONFINE_SECCOMP=1), and execs argv[1:].
 //
-// Either stage can be turned off, which is the point: running the same probe
-// under userns-only, seccomp-only and both isolates what each mechanism does.
+// Any stage can be turned off, which is the point: running the same probe
+// under one mechanism at a time isolates what each does.
 //
-//	CONFINE_USERNS=1              enter a user namespace, map only 0->0
+//	N — user namespace
+//	CONFINE_USERNS=1              enter a user namespace with a partial ID map
+//	CONFINE_MAP_HOSTID=1000       map 0 -> this host id (default 0; the target
+//	                              runtime maps 0 -> 1000, verification/real/identity.txt)
+//	CONFINE_MOUNTNS=1             also give the child a mount namespace owned by
+//	                              that user namespace, which is what makes
+//	                              may_mount() pass (the target has one)
 //	CONFINE_SETGROUPS=allow       write "allow" to setgroups (default: deny)
 //	CONFINE_EXTRA_GROUP=42        hold gid 42 before entering (it is unmapped
 //	                              inside, so getgroups() reports overflowgid)
+//
+//	F — seccomp filter
 //	CONFINE_SECCOMP=1             install the seccomp filter
-//	CONFINE_ALLOW_UNSHARE=1       drop the unshare(2) denial
-//	CONFINE_ALLOW_MOUNT=1         drop the mount(2)/umount2(2) denial
+//	CONFINE_ALLOW_UNSHARE=1       drop the unshare(2)/setns(2) denial
+//	CONFINE_ALLOW_MOUNT=1         drop the mount(2)/umount2(2)/pivot_root(2) denial
 //	CONFINE_ALLOW_PTRACE=1        drop the ptrace(2) denial
+//	CONFINE_DENY_PROCESS_VM=1     also deny process_vm_readv/writev, as the
+//	                              target's filter does (paper §3.7a)
 //	CONFINE_DENY_CLONE_NS=1       additionally deny clone(2) with any CLONE_NEW*
 //	CONFINE_DENY_SETGROUPS=1      additionally deny setgroups(2) in the filter
 //	CONFINE_DENY_CHOWN_NONZERO=1  additionally deny chown(2) to a nonzero id
 //	CONFINE_DENY_SETUID_NONZERO=1 additionally deny setuid(2) to a nonzero id
 //	CONFINE_DENY_MKNOD=1          additionally deny mknod(2)
+//
+//	M — path-scoped LSM
+//	CONFINE_LANDLOCK=/tmp:/state  restrict writes to these subtrees (reads stay
+//	                              unrestricted). Also denies every mount-topology
+//	                              operation, including move_mount(2), because
+//	                              landlock's sb_mount/move_mount hooks refuse
+//	                              whenever any filesystem right is handled.
+//
+//	CONFINE_VERBOSE=1             report what was applied, on stderr
 package main
 
 import (
@@ -81,6 +101,9 @@ const (
 	sysUnshare   = 272
 	sysSetns     = 308
 	sysSeccomp   = 317
+
+	sysProcessVMReadv  = 310
+	sysProcessVMWritev = 311
 )
 
 // CLONE_NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|NEWNET|NEWTIME.
@@ -105,6 +128,14 @@ func main() {
 		enterUserns()
 		return
 	}
+	// M before F: a Landlock ruleset needs open(2) on each allowlisted path,
+	// and the filter has no reason to permit it separately.
+	if p := os.Getenv("CONFINE_LANDLOCK"); p != "" {
+		if err := applyLandlock(p); err != nil {
+			fmt.Fprintln(os.Stderr, "confine:", err)
+			os.Exit(1)
+		}
+	}
 	if env("CONFINE_SECCOMP") {
 		installFilter()
 	}
@@ -114,31 +145,83 @@ func main() {
 	}
 }
 
-// enterUserns re-execs this binary inside a user namespace that maps only
-// uid 0 and gid 0. Every other ID stays unmapped, which is what makes the
-// kernel return EINVAL for setuid(1000) and chown(0,42) with no filter in
-// play at all.
+// enterUserns re-execs this binary inside a user namespace that maps a single
+// ID: container 0 -> CONFINE_MAP_HOSTID (0 by default, 1000 on the target).
+// Every other ID stays unmapped, which is what makes the kernel return EINVAL
+// for setuid(1000) and chown(0,42) with no filter in play at all. Which host
+// ID sits behind the map changes nothing about that: what matters is that the
+// map has one entry.
 func enterUserns() {
+	hostID := 0
+	if v := os.Getenv("CONFINE_MAP_HOSTID"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "confine: bad CONFINE_MAP_HOSTID:", err)
+			os.Exit(2)
+		}
+		hostID = n
+	}
 	if g := os.Getenv("CONFINE_EXTRA_GROUP"); g != "" {
 		gid, err := strconv.Atoi(g)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "confine: bad CONFINE_EXTRA_GROUP:", err)
 			os.Exit(2)
 		}
-		groups := []uint32{0, uint32(gid)} // gid_t is 32-bit
+		// The first entry is the one the map covers, so it shows up as gid 0
+		// inside; the second is unmapped and shows up as overflowgid.
+		groups := []uint32{uint32(hostID), uint32(gid)} // gid_t is 32-bit
 		// AllThreadsSyscall so the credential holds on the thread that forks.
 		if _, _, e := syscall.AllThreadsSyscall(syscall.SYS_SETGROUPS,
 			uintptr(len(groups)), uintptr(unsafe.Pointer(&groups[0])), 0); e != 0 {
 			fmt.Fprintln(os.Stderr, "confine: setgroups:", e)
 		}
 	}
+	// A map of 0 -> hostID only makes the child uid 0 if the child's real
+	// credential *is* hostID: the map translates that id and nothing else, so
+	// a child still running as host root would land on overflowuid with an
+	// empty capability set. Drop to hostID here, before the clone, which is
+	// also what the target's sandbox init does (its map is 0 -> 1000 and it
+	// runs as 1000). Writing a single-entry map for one's own id needs no
+	// privilege, so the drop costs nothing.
+	if hostID != 0 {
+		if _, _, e := syscall.AllThreadsSyscall(syscall.SYS_SETRESGID,
+			uintptr(hostID), uintptr(hostID), uintptr(hostID)); e != 0 {
+			fmt.Fprintln(os.Stderr, "confine: setresgid:", e)
+			os.Exit(1)
+		}
+		if _, _, e := syscall.AllThreadsSyscall(syscall.SYS_SETRESUID,
+			uintptr(hostID), uintptr(hostID), uintptr(hostID)); e != 0 {
+			fmt.Fprintln(os.Stderr, "confine: setresuid:", e)
+			os.Exit(1)
+		}
+		// Changing euid clears the dumpable flag, which makes /proc/self owned
+		// by root and mode 0555 — so the re-exec below fails EACCES on
+		// /proc/self/exe, with nothing in the message to say why. Restore it.
+		if _, _, e := syscall.AllThreadsSyscall(syscall.SYS_PRCTL,
+			4 /* PR_SET_DUMPABLE */, 1, 0); e != 0 {
+			fmt.Fprintln(os.Stderr, "confine: set_dumpable:", e)
+			os.Exit(1)
+		}
+	}
 	cmd := exec.Command("/proc/self/exe", os.Args[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), "CONFINE_STAGE=1")
+	// CONFINE_MOUNTNS gives the child a mount namespace *owned by* the new
+	// user namespace. It matters more than it looks: may_mount() asks for
+	// CAP_SYS_ADMIN in current->nsproxy->mnt_ns->user_ns (fs/namespace.c,
+	// v6.18), so without it fsopen/fsmount/open_tree fail EPERM even though
+	// the process is root in its own user namespace. The target passes that
+	// check (verification/real/extkernel-newapi.txt), so a faithful model of
+	// the target needs this flag; the paper's original §3.2 model, which did
+	// not set it, is a strictly weaker environment on that one axis.
+	cloneFlags := uintptr(syscall.CLONE_NEWUSER)
+	if env("CONFINE_MOUNTNS") {
+		cloneFlags |= syscall.CLONE_NEWNS
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:  syscall.CLONE_NEWUSER,
-		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 1}},
-		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 1}},
+		Cloneflags:  cloneFlags,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostID, Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: hostID, Size: 1}},
 		// false makes Go write "deny" to /proc/<pid>/setgroups before the
 		// gid map, which is what turns setgroups(2) into EPERM inside.
 		GidMappingsEnableSetgroups: os.Getenv("CONFINE_SETGROUPS") == "allow",
@@ -181,6 +264,11 @@ func installFilter() {
 		{sysSetgroups, errPERM, !env("CONFINE_DENY_SETGROUPS")},
 		{sysMknod, errPERM, !env("CONFINE_DENY_MKNOD")},
 		{sysMknodat, errPERM, !env("CONFINE_DENY_MKNOD")},
+		// The target's filter denies these two as well (paper §3.7a): they
+		// return EPERM for a pid that does not exist, where the kernel would
+		// answer ESRCH. Off by default so older sections keep their meaning.
+		{sysProcessVMReadv, errPERM, !env("CONFINE_DENY_PROCESS_VM")},
+		{sysProcessVMWritev, errPERM, !env("CONFINE_DENY_PROCESS_VM")},
 	}
 	for _, d := range denials {
 		if d.skip {

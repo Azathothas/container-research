@@ -1,0 +1,34 @@
+== conditions
+date              2026-09-08T02:17:11Z
+host kernel       6.18.44-fc-v24
+pathmap           https://github.com/VHSgunzo/pathmap @ 98b3d2aef724249f71bb96d4235872407f21bf54
+
+interposed symbols 129
+ownership calls    3
+
+== inside the reconstruction
+== reconstruction conditions
+date              2026-09-08T02:17:11Z
+host kernel       6.18.44-fc-v24
+image             sha256:3a78a4edb3c1de3952bc5c152030c8332485c57df1adfe9157bd66c38d42152a
+target: N+F only — M: unavailable (no CONFIG_SECURITY_LANDLOCK on this kernel);
+        writes outside /tmp /dev/shm /workspace /state will NOT be denied
+--- 1. path mapping without mount(2)
+    MAPPED    a path that does not exist resolved to the real one
+--- 2. chown to an unmapped gid, under the interposer
+    bare rc=1  chown: changing ownership of '/tmp/iv/probe/f': Invalid argument
+    shim rc=1  chown: changing ownership of '/tmp/iv/probe/f': Invalid argument
+    NOT CLEARED  path mapping is not ownership faking; the wall stands
+--- 3. the ptrace tracer half
+    DEAD      PTRACE_TRACEME: Operation not permitted PTRACE_SETOPTIONS: Operation not permitted 
+--- 4. memfd_create + fexecve (the memfd launch rung)
+    memfd_create+exec                  OK
+
+== reading
+  The surviving half of this tier is the preload, not the tracer: the
+  runtime's filter denies ptrace(2) and process_vm_readv(2), which is
+  both of the tracer's channels (paper §3.7a).
+  Path mapping and ownership faking are different jobs. An interposer
+  that maps paths still passes the real uid/gid to the kernel, so §9.1
+  stands until the same library also answers chown — which is the
+  fakeroot half of TOOL.md's interposer spec, not the fakechroot half.

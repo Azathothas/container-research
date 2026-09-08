@@ -1,0 +1,16 @@
+mount(2) bogus target              FAIL errno=1 EPERM
+umount2(2) bogus target            FAIL errno=1 EPERM
+pivot_root(2) bogus paths          FAIL errno=1 EPERM
+process_vm_readv(bogus pid)        FAIL errno=1 EPERM
+pidfd_getfd(-1,-1) [control]       FAIL errno=9 EBADF
+kcmp(-1,-1,...) [control]          FAIL errno=38 ENOSYS
+fsopen(tmpfs)                      OK
+fsmount(tmpfs)                     OK
+open_tree(/tmp, CLONE)             OK
+move_mount(-> bogus dest)          FAIL errno=2 ENOENT
+move_mount(-> /tmp/mm-probe)       OK
+openat(detached tmpfs, O_DIRECTORY) OK
+seccomp(NEW_LISTENER)              OK
+open /proc/self/mem O_RDONLY       OK
+open /proc/self/mem O_RDWR         OK
+landlock_create_ruleset(VERSION)   FAIL errno=38 ENOSYS
