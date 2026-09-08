@@ -9,7 +9,7 @@ provides.
 |---|---|
 | [`paper_final.md`](paper_final.md) | The paper. Every empirical claim is tagged verified, source-established, or reported-and-unreproducible. |
 | [`verification/`](verification/) | The harness that produces the verified claims. `./verification/run.sh` |
-| [`verification/real/`](verification/real/) | Evidence captured **on the target runtime itself** (2026-09-07): identity maps, bare census, spawn/interpose matrices, writability map, bwrap differential, pacman.conf, and the lilipod v2 lifecycle run. |
+| [`verification/real/`](verification/real/) | Evidence captured **on the target runtime itself** (2026-09-07): identity maps, bare census, spawn/interpose matrices, writability map, bwrap differential, pacman.conf, and the lilipod v2 lifecycle run. `ext*.txt` add a second session: a kernel-feature survey (new mount API, seccomp user-notification, memory-access split) and seven further tools tested at their claims (udocker, dockless, rurima, ruri, treesandbox, sandlock, pathshim — paper §3.7a/§11a). |
 | [`patches/`](patches/) | `lilipod-restricted-v2.diff` — the published chroot adaptation, revised per this corpus's review. |
 | [`references/`](references/) | The earlier manuscripts and reviews this work reconciles, unmodified. |
 

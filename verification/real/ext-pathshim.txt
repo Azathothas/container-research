@@ -1,0 +1,57 @@
+### pathshim (compforge @ 8bcc34e) on the target (2026-09-07)
+
+Built with cargo 1.98.1. Claims: best-effort bind mappings without mount
+privileges, implemented via seccomp user notification + parent-to-child memory
+access + fd injection; probes the node and degrades to `passthrough` (running
+the command unmapped) when bind-view cannot be installed; mode + reason
+printed to stderr.
+
+## probe
+
+    $ pathshim probe --bind /workspace/evi/ps-source:/workspace2
+    passthrough
+    pathshim: probe mode=passthrough reason=bind-view-probe-failed error=Operation not permitted (os error 1)
+    (exit 1, as documented for degradation)
+
+## run
+
+    $ pathshim --bind /workspace/evi/ps-source:/workspace2 --cwd /workspace2 -- \
+        /bin/sh -c 'pwd; cat data.txt; echo BINDVIEW-OK'
+    pathshim: collect mode=passthrough reason=bind-view-probe-failed error=Operation not permitted (os error 1)
+    /workspace/tools/pathshim          <- cwd not translated
+    cat: data.txt: No such file or directory
+    BINDVIEW-OK                        <- command itself runs, unmapped
+    (exit 0)
+
+## attribution of the failing probe leg
+
+pathshim's startup probe checks (README §Runtime adaptation): seccomp user
+notification, parent-to-child memory access, fd injection, live projection.
+Standalone probes of each primitive on this runtime
+(extkernel-newapi.txt §3):
+
+    seccomp NEW_LISTENER + notif round-trip      OK
+    SECCOMP_IOCTL_NOTIF_ADDFD (SETFD)            OK
+    process_vm_readv(child)                      EPERM   <- filter F
+    /proc/<pid>/mem O_RDONLY                     OK
+    /proc/<pid>/mem O_RDWR (write path)          EACCES  <- mechanism M
+
+The reported EPERM matches process_vm_readv: pathshim reads syscall path
+arguments with process_vm_readv (src/linux/remote.rs read_child... ->
+libc::process_vm_readv) and rewrites exec pathnames through /proc/<pid>/mem
+O_RDWR writes (remote.rs:79) — the first is seccomp-filtered, the second
+M-denied, so bind-view is correctly reported unusable and passthrough is
+selected. Command startup is never retried in another mode (documented
+side-effect discipline, held).
+
+## verdict
+
+Behaves exactly as claimed on a restrictive node: probe -> loud degradation ->
+passthrough, zero silent path mapping. Its degradation is honest in the
+direction that matters here (never claims a bind it cannot provide). The
+design is the strongest existing implementation of the seccomp-notif
+supervisor tier this corpus identifies as viable: had it read arguments via
+/proc/<pid>/mem read-only (which this runtime permits), bind-view's
+open/stat/exec interception would stand; only the exec-pathname rewrite
+(FOLL_FORCE memory write) is unavailable even then. A `pathshim probe` exit
+code is a drop-in preflight for the notif tier on any node.

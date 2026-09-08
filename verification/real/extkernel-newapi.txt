@@ -1,0 +1,94 @@
+### extended kernel-feature survey (2026-09-07, second target session)
+
+Environment: same class as verification/real/identity.txt — uid=0 gid=0 groups=0,65534,
+uid_map/gid_map `0 1000 1`, setgroups deny, Seccomp: 2, kernel 6.18.39-gentoo-dist-bin,
+/tmp a 64 MiB tmpfs, / on ZFS. Probes are single-threaded C programs, gcc 15.3.0.
+
+## 1. filter-vs-LSM separation (bogus-argument probes)
+
+Seccomp cannot inspect pointer arguments and runs before the syscall body, so a
+path-shaped errno for a bogus path proves the syscall executed (not filtered);
+EPERM for a bogus path proves a pre-execution denial.
+
+    mount(2) bogus target                          rc=-1 errno=1  EPERM   -> filtered (F)
+    mount(2) EFAULT target                         rc=-1 errno=1  EPERM   -> filtered (F)
+    umount2(2) bogus target                        rc=-1 errno=1  EPERM   -> filtered (F)
+    pivot_root(2) bogus paths                      rc=-1 errno=1  EPERM   -> filtered (F)
+    unshare(2) flags=0                             rc=-1 errno=1  EPERM   -> filtered (F)
+    unshare(2) CLONE_NEWNS                         rc=-1 errno=1  EPERM   -> filtered (F)
+    setns(2) bad fd                                rc=-1 errno=1  EPERM   -> filtered (F)
+    ptrace(2) TRACEME                              rc=-1 errno=1  EPERM   -> filtered (F)
+    chroot(2) bogus target                         rc=-1 errno=2  ENOENT  -> executed
+    process_vm_readv(bogus pid 999999)             rc=-1 errno=1  EPERM   -> filtered (F; kernel would say ESRCH)
+    process_vm_writev(bogus pid 999999)            rc=-1 errno=1  EPERM   -> filtered (F)
+    pidfd_getfd(-1,-1)                             rc=-1 errno=9  EBADF   -> executed (NOT filtered)
+    process_madvise(-1,...)                        rc=-1 errno=9  EBADF   -> executed
+    kcmp(-1,...)                                   rc=-1 errno=3  ESRCH   -> executed
+
+New relative to paper §3.2: the filter also denies process_vm_readv/process_vm_writev.
+
+## 2. new mount API (fsopen/fsmount/open_tree/move_mount/mount_setattr)
+
+    fsopen(tmpfs)                              OK
+    fsconfig(CMD_CREATE)                       OK
+    fsmount(tmpfs)                             OK      (detached mount fd; 6.18 fsmount starts
+                                                      with may_mount(), so this also proves
+                                                      may_mount() passes on this runtime)
+    open_tree(/tmp, OPEN_TREE_CLONE)           OK
+    mount_setattr(detached, propagation=MS_SLAVE)  OK
+    move_mount -> /tmp/mm (existing dir)       EPERM
+    move_mount -> /workspace/probe/mm          EPERM
+    move_mount -> nonexistent dest             ENOENT  <- syscall EXECUTES (not filtered);
+                                                        EPERM above is therefore kernel-internal
+    openat(mfd,'probe.txt',O_CREAT) on detached tmpfs    EACCES
+    openat(mfd,'.',O_RDONLY|O_DIRECTORY)                 EACCES   (tmpfs root mode 041777 uid 0)
+    openat(procfs-mfd,'uptime')                          EACCES
+    open /proc/uptime (attached path)                     OK
+
+Kernel-source attribution (v6.18.39 fs/namespace.c): move_mount's only pre-LSM
+EPERM site is may_mount(); fsmount's identical may_mount() provably passes, and
+do_move_mount() contains no EPERM site — the EPERM comes from the LSM hook
+security_move_mount() in vfs_move_mount(). Detached-mount fd access fails EACCES
+at open time: an LSM resolving paths cannot resolve a detached mount, matching
+the Landlock-class behaviour already attributed to M. Landlock in v6.18 hooks
+sb_mount/move_mount/sb_pivotroot/sb_umount/sb_remount plus path_*/file_open —
+a single Landlock ruleset is sufficient to explain every M observation.
+
+Inside clone(CLONE_NEWNS) child (mount ns owned by our userns — NS_GET_USERNS
+ioctl confirms mnt/pid/uts ns are owned by userns inode 4026535963, ours):
+
+    mount(2)(tmpfs,/tmp/mm2)                   EPERM   (filter F, unconditional)
+    fsmount(tmpfs)                             OK
+    move_mount(-> /tmp/mm2)                    EPERM   (LSM M, not F — same as parent ns)
+
+So §3.4/§9.4's "available namespace, unusable mount" holds, now with the exact
+split: creation of detached mounts and attribute changes are permitted; every
+attach path is denied (mount(2)/pivot_root by F, move_mount by M).
+
+## 3. seccomp user notification (supervisor route)
+
+    seccomp(SET_MODE_FILTER, NEW_LISTENER)     OK  (fd returned)
+    seccomp(SET_MODE_FILTER, plain)            OK
+    PR_GET_NO_NEW_PRIVS                        1
+    notif round-trip (filter getppid)          OK  (RECV + USER_NOTIF_FLAG_CONTINUE; child saw true ppid)
+    SECCOMP_IOCTL_NOTIF_ADDFD (SETFD fd99)     OK  (child read injected /etc/resolv.conf via fd 99)
+    open /proc/<child>/mem O_RDONLY            OK  (pread of child global returns correct value)
+    open /proc/<child>/mem O_RDWR              EACCES (write intent denied — M write allowlist)
+    pwrite to child via /proc/pid/mem          n/a (open O_RDWR fails)
+
+A seccomp-notif supervisor can therefore intercept syscalls, read path arguments
+via /proc/<pid>/mem (read-only open is allowed), and inject fds — but cannot use
+process_vm_readv/writev (F) or /proc/pid/mem writes (M). Tools built on
+process_vm_* silently lose their interception on this runtime (see
+ext-sandlock.txt: dry-run/COW fail OPEN; network ACL fails CLOSED).
+
+## 4. other features
+
+    landlock_create_ruleset(version)           OK  (returns ABI 7)
+    open_tree(/tmp, CLONE|RECURSIVE)           OK
+    memfd_create                               OK
+    pidfd_open(1)                              OK
+
+Evidence scripts: probes compiled in-session from C sources
+(unshare/mount/chown/setuid/ptrace census; kfeat; newmount3; childmnt;
+filtervslsm; detachuse; notif; memtest2; pvm; ptraceclass; nsowner).

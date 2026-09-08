@@ -31,12 +31,19 @@ Two mechanisms produce this, plus one helper (all verified on the target; see
   apply to unmapped-owned objects. This produces the chown/setuid/setgroups/mknod
   denials and the unwritable directories.
 - **F** — a seccomp filter denying `unshare`, `setns`, `mount`, `umount2`,
-  `pivot_root`, `ptrace` (each verified on the target). **It does not deny
-  `clone`.** So `clone(CLONE_NEWNS)`
-  *succeeds* — you can hold a private mount namespace and still be unable to mount
-  anything in it. This asymmetry inverts tool assumptions; see §6.6 below.
-- **M** — a path-scoped write allowlist (Landlock-class). Explains why `/` rejects
-  writes while `/tmp` (same owner, same flags) accepts them.
+  `pivot_root`, `ptrace`, `process_vm_readv`, `process_vm_writev` (each verified
+  on the target, `extkernel-newapi.txt`). **It does not deny `clone`** (namespace
+  flags succeed), `chroot`, `seccomp` (you can stack your own filters, incl.
+  user-notification listeners), `fsopen`/`fsmount`/`open_tree`/`mount_setattr`,
+  or `move_mount` (which M denies instead). So `clone(CLONE_NEWNS)`
+  *succeeds* — you can hold a private mount namespace, create detached mounts,
+  and change mount attributes, but never *attach* one (`mount(2)` by F,
+  `move_mount` by M). This asymmetry inverts tool assumptions; see §6.6 below.
+- **M** — a path-scoped LSM (Landlock-class; v6.18 Landlock's hook set is
+  sufficient to explain every observation). Writable exactly
+  {`/tmp`, `/dev/shm`, `/workspace`, `/state`}; denies `/proc/<pid>/mem` opened
+  for writing; denies `security_move_mount` (attach) and any access to a
+  detached mount (`openat` on an fsmount/open_tree fd → `EACCES`).
 
 There is **no `/etc/passwd`**, no `/run`, no `/var`, no `/dev/fuse`. `docker` on
 PATH is a podman alias with no daemon. Plain-HTTP (tcp/80) egress is broken;
@@ -54,12 +61,14 @@ of environments without lying about what it provides.
 
 - **`paper_final.md`** — the reconciled, verified paper. Read §3 (the runtime
   model and its attribution table), §9 (the four recurring walls), §10 (the honest
-  runtime design), §11 (comparative summary). §3.7 records target-run deltas.
+  runtime design), §11 (comparative summary; §11a: the seven-tool extended corpus).
+  §3.7 records target-run deltas; §3.7a the second-session kernel findings.
 - **`verification/`** — the harness that backs every `[V]` claim: `run.sh` runs
   model environments (`confine/`); `probe/`, `cprobe/` are the bare probes.
   **`verification/real/` is evidence captured on the actual target runtime** —
   `identity.txt`, `probe-census.txt`, `spawn.txt`, `writability.txt`, `bwrap.txt`,
-  `lilipod-v2-lifecycle.txt`, PoC captures, and `poc-note.md`.
+  `lilipod-v2-lifecycle.txt`, PoC captures, and `poc-note.md`; the `ext*.txt`
+  files add the second session (kernel-feature survey + the seven tools of §11a).
 - **`references/`** — the three earlier manuscripts this corpus reconciled
   (`paper-ox.md`, `paper-opus.md`, `paper-astra-*.md`), unmodified. `paper-ox.md`
   is the original target-side study.
@@ -76,6 +85,18 @@ of environments without lying about what it provides.
 | runimage (as shipped) | dead at bubblewrap | bwrap needs `mount(MS_SLAVE)` (F) |
 | **lilipod + patch** | **works** | namespaces+mounts replaced by chroot; see below |
 | **runimage rootfs via chroot + onelf** | **works** | full Arch userspace packaged as one 215 MiB executable |
+
+Extended corpus (second target session; evidence `verification/real/ext*.txt`):
+
+| Tool | Verdict | Why |
+|---|---|---|
+| **udocker 1.3.17, F1 fakechroot** | **works (unpatched)** | pull/create + libc-interposed runs: apk install, curl HTTPS inside alpine; needs `--allow-root` + `--user=0` (no-passwd root-remap bug). P1/P2 PRoot dead (ptrace, F); R1 dies instantly and silently (rc=4); dpkg-class workloads trip interposer gaps |
+| **ruri 3.9.5** | **works (unpatched)** | chroot container with per-mount warnings, unshare mode probed-then-refused, apk+curl end-to-end; install host resolv.conf yourself; `/dev/null` left absent (shell `>` creates a growing regular file — trap) |
+| rurima | pull dead, run works | `tar -xpf` as root → unmapped-gid chown (§9.1 wall, 5th tenant); non-root path wraps tar in proot (dead, F); `rurima r` on a prepared rootfs works |
+| dockless | CLI layer OK, engine dead | docker-verb shim over udocker behaves exactly as documented (fail-fast guardrails); its engine is PRoot (F) and its postgres hook needs `chown 999`/`mknod` (N) |
+| treesandbox | dead | `getpwuid(0)` KeyError then missing `/etc/hostname` before any syscall; architecture is `unshare`+`mount` with no fallback (F) |
+| sandlock 0.8.7 | partial, one tier unsafe | Landlock+seccomp+`-m` limits work; every notif feature needing child-memory reads degrades: `--dry-run` **fails open under a write grant** ("no changes" while changing files; fails closed without), net ACL fails closed, `--chroot` exec dead (`process_vm_readv` F, `/proc/pid/mem` O_RDWR M) |
+| pathshim | honest degrade | `probe` → `passthrough`, reason printed (`process_vm_readv` EPERM); command runs unmapped; never silently maps |
 
 ### 2.3 What the lilipod v2 patch does (the working system)
 
@@ -382,6 +403,27 @@ For running tools we cannot patch (their Go cores issue raw syscalls):
   `clone` namespace flags, fake `mount`/`pivot_root`(→chroot), fake `chown` —
   could make an unmodified OCI runtime believe it succeeded. Then podman
   (unpatched) *might* run images through it. Highest-value experiment left open.
+- **seccomp user-notification supervision is now a *measured* tier** (paper
+  §3.7a): stacking a `NEW_LISTENER` filter, receiving notifications, and
+  injecting fds via `SECCOMP_IOCTL_NOTIF_ADDFD` all work on the target;
+  `/proc/<pid>/mem` opens **read-only** for argument reading. Dead legs:
+  `process_vm_readv/writev` (F) and `/proc/pid/mem` O_RDWR (M) — so exec-path
+  `/proc/<pid>/mem` write (M) — and since an exec can only be *remapped* by
+  rewriting the pathname in the child's memory, exec mediation here can deny
+  but never remap. pathshim (compforge) is the reference design and
+  its `probe` subcommand a drop-in preflight; sandlock (multikernel) is the
+  cautionary tale — its silent Continue-fallback turns `--dry-run` into a false
+  "no changes" report here. **Spec consequence: podbox's notif tier must probe
+  {listener, ADDFD, /proc/pid/mem read} and refuse the tier loudly when any
+  leg is missing — never Continue-blind.**
+- **udocker F1 is the measured interpose tier** (paper §11a): unpatched
+  pull→install→run works for busybox/musl images; its dpkg failure marks the
+  coverage ceiling to document rather than hide. Reusing udocker's engine
+  tarballs (fakechroot libs per distro) is a viable shortcut for podbox's
+  interpose tier instead of building an LD_PRELOAD lib from scratch.
+- **ruri is the measured chroot tier**: probe-then-refuse and per-mount
+  warnings are the §10.2/§10.8 discipline in production C, worth copying
+  verbatim (ruri's warning style even names source file and line).
 - **Static fixtures + env**: preconditions that are files (mtab, resolv.conf,
   pacman.conf, apt conf) can be pre-satisfied without touching binaries — the
   apptainer `mountinfo` technique generalized; already implemented in §5.4.
@@ -398,7 +440,7 @@ For running tools we cannot patch (their Go cores issue raw syscalls):
 | `setuid(1000): Invalid argument` | uid unmapped (N) | only 0 exists; don't drop privileges |
 | `mount ...: operation not permitted` **inside your own new mountns** | filter F denies mount everywhere | nothing mount-shaped works; chroot |
 | network dead in a cloned child (`ENETUNREACH`) | `CLONE_NEWNET` *succeeded* → empty netns | don't pass namespace clone flags you can't populate |
-| `tar: etc/shadow: Cannot change ownership ... Invalid argument` | gid 42 (shadow) unmapped | `--no-same-owner` |
+| `tar: etc/shadow: Cannot change ownership ... Invalid argument` (lilipod-stock, rurima) | §9.1: gid 42 (shadow) unmapped in userns (N) | ownership-neutral extraction (`--no-same-owner`) or interposition |
 | dwarfs `short write: -20 != N` | libarchive `ARCHIVE_WARN`; errno ENOSPC — tmp dir too small (64 MiB /tmp!) | `TMPDIR` somewhere with room |
 | `failed to chown temporary download directory` (pacman) | `DownloadUser = alpm` unmapped | comment it out |
 | apt `Method http has died` / `no Release file` | tcp/80 egress broken in this sandbox | https sources + CA |
@@ -406,6 +448,11 @@ For running tools we cannot patch (their Go cores issue raw syscalls):
 | `failed to change dir to cachedir: Symbolic link loop` (xbps) | a later OCI layer whiteouts an earlier layer's self-referential symlink; plain tar ignores `.wh.*` | apply whiteouts after each layer (v2.2 `ApplyOCIWhiteouts`) |
 | zypper fixups don't stick (http again after refresh) | RIS index service regenerates repos.d from `/usr/share/zypp/local/service/` | sed the index, refresh-services, then repos.d |
 | dnf "Couldn't resolve host mirrors.*" although resolv.conf looks fine | image bakes a build-host resolver (rocky: `192.168.122.1`) | install the host resolv.conf (docker semantics, v2.3) |
+| proot `ptrace(TRACEME): Operation not permitted` + launchpad-bug hint | F filters ptrace; proot misdirects to an old Ubuntu kernel bug and suggests `PROOT_NO_SECCOMP` | no env var helps; use an engine without ptrace (fakechroot/chroot) |
+| dpkg `unable to securely remove '....dpkg-new': No such file...` under udocker F1 | fakechroot coverage gap on dpkg's rename dance (interpose tier ceiling) | busybox/musl images work; for dpkg images use the chroot tier |
+| `Error: invalid syntax for user` (udocker F-engines as root here) | engine remaps `root`→`HostInfo().username()`; `getpwuid(0)` fails (no `/etc/passwd`) | `run --user=0` (numeric uid skips the remap) |
+| sandbox tool "no such changes"/dry-run that still writes files | notif supervisor fell back to Continue: it could not read the child's path args (`process_vm_readv` is F-filtered) | probe the notif legs up front and refuse the tier (pathshim's `probe` does) |
+| `getpwuid(): uid not found: 0` (python tools: udocker remap, treesandbox) | no `/etc/passwd` on the host | synthesize one in chroots you build; for host-python tools, an LD_PRELOAD passwd shim (getpwuid_r too — CPython uses the `_r` variants) |
 
 ---
 

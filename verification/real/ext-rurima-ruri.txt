@@ -1,0 +1,72 @@
+### rurima + ruri (RuriOSS @ 30a0637 / 711673a) on the target (2026-09-07)
+
+Both built from source on the runtime itself (gcc 15.3.0, `make` with
+config.mk LD_FLAGS="-lcap -lseccomp -lbsd"; ruri via ./build-ruri -j 4).
+ruri 3.9.5, rurima embeds ruri as a library.
+
+## rurima docker pull: dies at the §9.1 ownership wall
+
+    $ rurima docker pull -i alpine -t latest -s ./ruri-alpine
+    In rurima_extract_archive() ../src/archive.c line 259:
+    Extract command exited with code 2
+    stderr: tar: etc/shadow: Cannot change ownership to uid 0, gid 42: Invalid argument
+    tar: Exiting with failure status due to previous errors
+
+Cause (src/archive.c get_extract_command): running as root, rurima extracts
+layers with plain `tar -xpf` — `-p`/root implies --same-owner, so tar chowns
+to the image's unmapped gid 42. Identical to stock lilipod's wall (paper §5.3).
+The non-root path would wrap tar in proot (`proot -0 [--link2symlink] tar
+-xp...`) — dead here (F denies ptrace). No ownership-neutral fallback exists.
+(There is no `docker run` subcommand: `rurima docker` offers
+search/tag/pull/load/config/arch; after pulling it prints a `rurima r ...`
+commandline for the user. `rurima -h`'s toplevel `r`/`run` verb is the runner.)
+
+## rurima r (run an existing rootfs through embedded ruri): works
+
+    $ rurima r -w -W / -e PATH "/usr/local/sbin:..." <rootfs> /bin/echo RURIMA-R-TEST
+    RURIMA-R-TEST
+
+## ruri standalone: works unpatched, degrades loudly
+
+    $ ruri <alpine-rootfs> /bin/echo RURI-FRESH-TEST
+    Warning: Failed to mount procfs, will continue.
+    Warning: Failed to mount sysfs, will continue.
+    Warning: Failed to mount devtmpfs, will continue.
+    Warning: Failed to mount /dev/shm, will continue.
+    Warning: Failed to mount binfmt_misc, will continue.
+    Warning: Failed to create /dev/full, will continue.
+    Warning: Failed to create /dev/null, will continue.
+    ... (all mount/mknod attempts warn and continue)
+    Warning: failed to set groups QwQ
+    RURI-FRESH-TEST
+
+Every mount/mknod failure is a warning; the container still runs. The unshare
+mode refuses upfront instead of crashing:
+
+    $ ruri -u <rootfs> /bin/echo x
+    Unshare container need at least mount ns support QwQ
+    (ruri probes mount-ns support first — the §10.2 discipline, stock)
+
+Workloads through ruri (rootfs = udocker-extracted alpine):
+
+    /sbin/apk add --no-cache curl -> OK: 13.1 MiB in 25 packages
+    /usr/bin/curl -s https://example.com -> HTTP 200 (after installing host
+        resolv.conf into the rootfs; ruri does not install one — same
+        docker-semantics gap lilipod v2.3 had to fix)
+
+Traps observed:
+- /dev/null stays absent (mknod EPERM); the first shell redirection
+  `> /dev/null` silently CREATES a regular file (O_CREAT) — writes "work",
+  file grows, programs opening without O_CREAT fail ENOENT. Same shim question
+  as lilipod v2's deliberate regular-file /dev/null.
+- rootfs must be chroot-clean: using an udocker F1-mangled rootfs (absolute
+  symlinks) fails with a confusing `execv() returned: 25 (ENOTTY)`.
+
+## verdict
+
+ruri: works — a stock C "better chroot" whose defaults match this runtime
+(chroot path, per-mount warnings, unshare probed-then-refused). Needs the
+usual fixups (resolv.conf install, /dev/null shim policy).
+rurima: image acquisition dead at the same unmapped-gid chown wall as stock
+lilipod/podman/apptainer (§9.1) when run as root; non-root path needs proot
+(F). Its run wrapper inherits ruri's verdict once a rootfs exists.

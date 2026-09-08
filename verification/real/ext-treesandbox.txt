@@ -1,0 +1,45 @@
+### treesandbox (garywill @ 71acbee) on the target (2026-09-07)
+
+Rootless multi-layer sandbox in Python; layer1 config requires
+unshare_user=True + unshare_mnt=True; the sandbox tree is built from
+os.unshare(CLONE_NEWUSER/NEWNS) + tmpfs mounts + uid_map writes
+(src/userns_unpri.py, src/layer1.py, src/initializing.py CHK gates).
+
+## run attempt (src/__main__.py)
+
+    $ python3 -IBS src/__main__.py --app sleep
+      File ".../initializing.py", line 69, in init_sbxinfo
+        username = pwd.getpwuid(uid).pw_name
+    KeyError: 'getpwuid(): uid not found: 0'
+
+(no /etc/passwd on the host — first wall, before any namespace call)
+
+With an LD_PRELOAD passwd shim (getpwuid/getpwuid_r etc. returning root),
+the next wall:
+
+      File ".../initializing.py", line 72, in init_sbxinfo
+        hostname = open("/etc/hostname").read().strip()
+    FileNotFoundError: '/etc/hostname'
+
+(/etc is read-only under M; the file cannot be created either)
+
+## the walls past those (verified directly, from python3)
+
+    os.unshare(CLONE_NEWNS)   -> OSError 1 (Operation not permitted)
+    os.unshare(CLONE_NEWUSER) -> OSError 1 (Operation not permitted)
+
+and every rootfs-constructing step of layer2 is mount(2)/tmpfs (F denies
+mount; M denies move_mount — extkernel-newapi.txt §2). There is no fallback
+path in the code: initializing.py CHK() aborts layers lacking
+unshare_pid/unshare_mnt; layer1 sets both true.
+
+## verdict
+
+Dead on this runtime, at two independent layers: environment preconditions
+(getpwuid(0) KeyError, missing /etc/hostname) and the architectural one — the
+tool IS a user+mount namespace tree, and F denies unshare/mount (its sibling
+bubblewrap fails the same way, §8.1). treesandbox's "rootless" claim assumes
+an unconfined kernel offering userns+unshare, which this runtime's filter
+specifically removes. Its multi-layer "containers tree" idea remains relevant
+design input for §10 (nested semi-trusted companions), implementable here only
+on the seccomp-notif supervisor route.

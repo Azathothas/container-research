@@ -1,0 +1,97 @@
+### udocker 1.3.17 (indigo-dc @ 638bc42) on the target (2026-09-07)
+
+Run from a git clone via `python3 -m udocker.umain` shim (Python 3.14.6),
+UDOCKER_DIR=/workspace/ud. Engine tarball installed from udocker's own mirror
+(udocker-englib-1.2.11: proot, fakechroot libs, patchelf, runc, crun).
+
+## setup walls (all N/F/M, not udocker bugs)
+
+- euid 0: `Error: do not run as root !` -> `--allow-root` (documented).
+- no /etc/passwd: fakechroot engines remap user "root" to
+  `HostInfo().username()` = pwd.getpwuid(0) -> KeyError -> "" ->
+  `Error: invalid syntax for user`. Workaround: `run --user=0` (numeric user
+  skips the remap). engine/base.py:416-431, helper/hostinfo.py username().
+
+## pull / create (works)
+
+    $ udocker --allow-root pull alpine:latest     -> OK (HTTPS registry)
+    $ udocker --allow-root create --name=alp1 alpine:latest -> OK
+    $ udocker --allow-root pull debian:bookworm-slim -> OK
+
+Extraction survives because udocker is designed for unprivileged users:
+container/structure.py _untar_layers() shells out to
+`tar -C ROOT -x --one-file-system --no-same-owner --overwrite --no-same-permissions
+--exclude=dev/* --exclude=.wh.*` and applies OCI whiteouts itself
+(_apply_whiteouts). No chown wall, no mounts needed. Extracted /etc/shadow is
+0:0 — ownership-neutral by design (paper §10.4's default).
+
+## P1 default engine (PRoot): dead at filter F
+
+    $ udocker --allow-root run alp1 /bin/echo hi
+    proot error: ptrace(TRACEME): Operation not permitted
+    proot error: execve("/bin/echo"): Operation not permitted
+    proot info: It seems your kernel contains this bug: <launchpad 1202161>
+    To workaround it, set the env. variable PROOT_NO_SECCOMP to 1.
+
+Note the misdirection: proot blames an old Ubuntu kernel bug and suggests
+PROOT_NO_SECCOMP — on this runtime the denial is F filtering ptrace(2), and no
+env var fixes it. P2 (proot without seccomp acceleration) is the same wall.
+
+## F1 fakechroot engine: WORKS (unpatched)
+
+    $ udocker --allow-root setup --execmode=F1 alp1
+    $ udocker --allow-root run --user=0 alp1 /bin/echo F1-CLEAN-STDOUT-TEST
+    F1-CLEAN-STDOUT-TEST                                    (stdout, rc=0)
+
+Mechanism (from -D run): direct loader invocation —
+FAKECHROOT_ELFLOADER=ROOT//lib/ld-musl-x86_64.so.1,
+LD_PRELOAD=/workspace/ud/lib/libfakechroot-Alpine-x86_64.so,
+FAKECHROOT_BASE=ROOT, FAKECHROOT_EXCLUDE_PATH=/dev:/proc:/etc/resolv.conf:...
+Everything is libc interposition (paper §10.3 interpose tier), so it needs no
+ptrace, no mounts, no chown (fakechroot fakes them).
+
+Workloads through F1 (all unmodified third-party code):
+
+    /bin/sh -c 'echo SH-C-WORKS'                          -> works
+    -v /workspace/evi/voltest:/data  /bin/cat /data/f.txt -> hello-from-host
+    /sbin/apk add --no-cache htop
+        OK: 14.1 MiB in 30 packages
+    /usr/bin/htop --version                               -> htop 3.5.3-3.5.3
+    /usr/bin/curl -s -o /dev/null -w %{http_code} https://example.com -> 200
+    debian:bookworm-slim, F1, /bin/echo                   -> works (glibc loader path)
+
+F1 limits found:
+- busybox multicall argv quirks (invoking `id` via sh -c prints busybox usage).
+- debian apt-get update fails on http:// sources (tcp/80 egress, paper §8.3)
+  and then on missing CA store — fixable by the corpus's known fixups (https
+  sources + install host /etc/ssl/certs/ca-certificates.crt into ROOT).
+- after those fixups `apt-get update` succeeds, but dpkg unpack fails:
+      dpkg: error processing archive .../file_...deb (--unpack):
+       unable to securely remove '/usr/bin/file.dpkg-new': No such file or directory
+  i.e. dpkg's secure-unlink/rename dance against fakechroot-mapped paths —
+  an interposition-coverage gap (§10.3), not an N/F/M wall. Alpine/busybox
+  (apk) does not trip it; the alpine→debian gap marks the tier boundary.
+- F1 setup rewrites rootfs symlinks to absolute host paths (links_conv), so a
+  rootfs used by F1 is no longer chroot-clean for plain `chroot` afterwards.
+
+## R1 (runc): dead — silently
+
+With execmode verified R1 (`containers/alp1/execmode` = R1), the run exits
+**rc=4 in ~0.05 s with no output whatsoever** (no proot error, no runc error,
+no traceback); under `-D` the log stops right after the loader probe
+(`get_output: readelf -h ///lib64/ld-linux-x86-64.so.2`). An earlier attempt
+that watched a never-finishing run was a red herring: the execmode switch had
+not taken effect and the container was still F1. (Re-tested with the execmode
+file read before and after.)
+
+## verdict
+
+pull/create/verify: work. P1/P2: dead (F, ptrace). R1: dead — instant silent
+rc=4 (attribution to F unproven: no diagnostic is printed; runc's namespace
+orchestration is the expected wall but the engine fails before saying
+anything). F1/F2: work for dynamic payloads,
+`--user=0` required on this runtime; musl/busybox images run package installs
+end-to-end; glibc images run binaries but dpkg-class workloads hit interposer
+coverage gaps. udocker is the only unpatched docker-CLI-shaped tool in the
+study that runs containers here — via the interpose tier the paper already
+specifies (§10.3), not via namespaces.

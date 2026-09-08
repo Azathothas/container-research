@@ -1,0 +1,68 @@
+### dockless (ylang-ylang @ ed35b5d) on the target (2026-09-07)
+
+dockless is a docker-CLI shim over udocker: `bin/docker` routes compose→skeleton,
+run→dockless.run guardrails, the rest→udocker passthrough (`--allow-root` auto-added
+at euid 0). Its documented origin (README) is an autodl GPU rental box with no docker
+and no kernel container support but WORKING ptrace — the PRoot route.
+
+## installer (--dry-run, UDOCKER_DIR on /workspace)
+
+    [dockless] ok: disk 211G available (>=5G threshold)
+    [dockless] ok: python3 = /usr/bin/python3 (Python 3.14.6)
+    [dockless warn] real docker detected (/usr/bin/docker, podman version 5.8.2)
+    [dockless warn] pip3 missing -> python3 -m pip install --user udocker
+    [dockless plan] engine tarball offline install from vendor/
+    [dockless plan] ln -sf bin/docker ~/.local/bin/docker ...
+    acceptance: docker --help
+
+Detection layer behaves as documented (disk-space precheck, podman shadowing
+warning, engine tarball fallback for slow mirrors). Note it independently
+confirms the runtime's `docker`-on-PATH is a podman 5.8.2 alias (§3.6).
+
+## docker semantics layer (works as claimed, fail-fast)
+
+    $ bin/docker compose up -d
+    dockless: docker compose up —— 已列入子集，但 shim 核心尚未实现（下一步）。
+    $ bin/docker exec alp1 echo x
+    dockless: docker 子命令 'exec' 暂不支持 ... fail-fast
+    $ bin/docker run --rm alp1 ...
+    dockless: run --rm 目标 'alp1' 是已存在容器 —— ... fail-fast
+
+Guardrails fire loudly, never silently degrade — the honesty discipline the
+paper's §10.1 asks for, at the CLI layer.
+
+## the engine under it: dead here
+
+    $ bin/docker run alpine:latest /bin/echo DOCKLESS-RUN-OK
+    proot error: ptrace(TRACEME): Operation not permitted
+    proot error: execve("/usr/bin/echo"): Operation not permitted
+    (same misdirecting launchpad-bug hint as stock udocker P1)
+
+And with a container pre-set to udocker's F1 engine (the only working one here):
+
+    $ bin/docker run alp1 /usr/bin/htop --version
+    Error: invalid syntax for user
+
+— dockless run.py does not pass `--user=0`, so the no-/etc/passwd remap wall
+(see ext-udocker.txt) fires through the shim.
+
+## hooks contract: doubly dead
+
+hooks/postgres.sh documents the per-image quirk contract for the PRoot route;
+hook_apply() itself:
+
+    $ chown -R 999:999 <rootfs>/data ...
+    chown: changing ownership of ...: Invalid argument     (N: uid 999 unmapped)
+    hook_apply rc=1
+
+and its HOOK_DEV_NODES="null zero random urandom" mknod step is EPERM for real
+device numbers (§3.3/§3.5) — only whiteout mknod(0,0) succeeds.
+
+## verdict
+
+CLI-skeleton layer: sound and compatible (drop-in verbs, fail-fast discipline,
+disk-space precheck). Runtime layer: architecturally unavailable here — its
+only engine is PRoot (F denies ptrace) and its hook contract needs mknod+chown
+to unmapped ids (N). Notably, dockless's documented udocker-semantic traps
+(--rm deleting container metadata, no exec, root requires --allow-root) are
+exactly the class of parity documentation §5 of TOOL.md specifies for podbox.

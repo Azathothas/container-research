@@ -1,0 +1,63 @@
+### kernel-source attribution for §3.7a (fetched 2026-09-07)
+
+## fs/namespace.c @ v6.18.39 (git.kernel.org stable/linux, plain blob)
+
+$ grep -n "SYSCALL_DEFINE3(fsmount" fs/namespace.c
+4284:SYSCALL_DEFINE3(fsmount, int, fs_fd, unsigned int, flags,
+	if (!may_mount())
+		return -EPERM;
+
+	if ((flags & ~(FSMOUNT_CLOEXEC)) != 0)
+		return -EINVAL;
+
+
+$ awk move_mount entry:
+SYSCALL_DEFINE5(move_mount,
+		int, from_dfd, const char __user *, from_pathname,
+		int, to_dfd, const char __user *, to_pathname,
+		unsigned int, flags)
+{
+	struct path to_path __free(path_put) = {};
+	struct path from_path __free(path_put) = {};
+	struct filename *to_name __free(putname) = NULL;
+	struct filename *from_name __free(putname) = NULL;
+	unsigned int lflags, uflags;
+	enum mnt_tree_flags_t mflags = 0;
+	int ret = 0;
+
+	if (!may_mount())
+		return -EPERM;
+
+$ vfs_move_mount (the only LSM call):
+static inline int vfs_move_mount(const struct path *from_path,
+				 const struct path *to_path,
+				 enum mnt_tree_flags_t mflags)
+{
+	int ret;
+
+	ret = security_move_mount(from_path, to_path);
+	if (ret)
+		return ret;
+
+$ do_move_mount EPERM sites:
+0
+
+$ may_mount():
+bool may_mount(void)
+{
+	return ns_capable(current->nsproxy->mnt_ns->user_ns, CAP_SYS_ADMIN);
+}
+
+## security/landlock/fs.c @ linux-6.18.y — LSM_HOOK_INIT list:
+	LSM_HOOK_INIT(inode_free_security_rcu, hook_inode_free_security_rcu),
+	LSM_HOOK_INIT(sb_delete, hook_sb_delete),
+	LSM_HOOK_INIT(sb_mount, hook_sb_mount),
+	LSM_HOOK_INIT(move_mount, hook_move_mount),
+	LSM_HOOK_INIT(sb_umount, hook_sb_umount),
+	LSM_HOOK_INIT(sb_remount, hook_sb_remount),
+	LSM_HOOK_INIT(sb_pivotroot, hook_sb_pivotroot),
+	LSM_HOOK_INIT(path_link, hook_path_link),
+	LSM_HOOK_INIT(path_rename, hook_path_rename),
+	LSM_HOOK_INIT(path_mkdir, hook_path_mkdir),
+	LSM_HOOK_INIT(path_mknod, hook_path_mknod),
+	LSM_HOOK_INIT(path_symlink, hook_path_symlink),

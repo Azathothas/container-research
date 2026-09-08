@@ -12,7 +12,10 @@ A class of Linux environments — agent sandboxes, hardened CI executors, locked
 HPC login nodes — presents a process with uid 0 and a full capability set while
 refusing most of the kernel operations container runtimes are built on. We
 characterize one such runtime and evaluate four container tools against it:
-**lilipod**, **Podman**, **Apptainer** and **runimage**.
+**lilipod**, **Podman**, **Apptainer** and **runimage**. A second session on the
+same runtime class extends the corpus to seven further tools — udocker, dockless,
+rurima, ruri, treesandbox, sandlock and pathshim — and sharpens the mechanism
+model with the new mount API and seccomp user-notification surfaces (§3.7a, §11a).
 
 The central finding is one of attribution. The runtime is not "a seccomp filter that
 denies namespaces". It is **two mechanisms with different signatures**: a user
@@ -92,6 +95,9 @@ requires `CAP_SYS_CHROOT` and is not a sandbox.
 | F10 | `/etc/mtab` is **not** required by pacman. It is read only when `CheckSpace` is enabled, which Arch's shipped `pacman.conf` leaves commented out. | [V] §8.3 |
 | F11 | Several probes in common use are non-discriminating: `mknod(S_IFCHR, 0)` creates a whiteout and never tests `CAP_MKNOD`; `unshare(CLONE_NEWUSER)` from any Go program returns `EINVAL` regardless of policy. | [V] §3.5 |
 | F12 | onelf refuses a bundle symlink whose target is **absolute** or climbs above the package root. A relative target that stays inside the bundle is accepted even when it dangles. | [S] §8.4 |
+| F13 | The new mount API splits cleanly: `fsopen`/`fsmount`/`open_tree(CLONE)`/`mount_setattr` are permitted (so `may_mount()` provably passes), while `move_mount` attach is denied by the **LSM M** (`security_move_mount`), not by the filter — it returns `ENOENT` for a bogus destination, which seccomp cannot produce. Detached mounts are creatable but not openable (`openat` on them → `EACCES`). | [V] §3.7a |
+| F14 | The filter also denies `process_vm_readv`/`process_vm_writev` (EPERM for a bogus pid, which the kernel would answer `ESRCH`); `ptrace(2)`, `process_vm_*` are all F, while `pidfd_getfd`/`process_madvise`/`kcmp` execute. But **`/proc/<pid>/mem` of a child opens read-only and reads correctly**, and seccomp user-notification with `SECCOMP_IOCTL_NOTIF_ADDFD` fd injection works. A notif-supervisor tier is therefore viable if it reads arguments via `/proc/<pid>/mem`. | [V] §3.7a |
+| F15 | Unpatched third-party tools now span the §10 mode ladder: **udocker 1.3.17's F1 fakechroot engine runs containers** (pull → apk install → curl HTTPS, all in-image) via libc interposition, and **ruri 3.9.5 runs a chroot container** with per-mount failure warnings and a probed refusal of unshare mode. Of the rest: sandlock's Landlock+seccomp tiers confine unpatched while its notif tier degrades (dry-run fails open with a false "no changes" report; network fails closed), and the others die at walls this paper already names. | [V] §11a |
 
 ---
 
@@ -171,7 +177,7 @@ We model the runtime as two mechanisms that can be switched on independently:
 | | Mechanism | Contents |
 |---|---|---|
 | **N** | User namespace | uid/gid maps covering only `0 -> 0`; `setgroups` denied; an unmapped supplementary group held from before entry |
-| **F** | Seccomp filter | `SECCOMP_SET_MODE_FILTER` with `PR_SET_NO_NEW_PRIVS`, inherited across `execve`, denying `unshare`, `setns`, `mount`, `umount2`, `pivot_root`, `ptrace` — and **nothing else** |
+| **F** | Seccomp filter | `SECCOMP_SET_MODE_FILTER` with `PR_SET_NO_NEW_PRIVS`, inherited across `execve`, denying `unshare`, `setns`, `mount`, `umount2`, `pivot_root`, `ptrace` — and nothing else. (On the target, §3.7a adds `process_vm_readv`/`writev` to the verified deny list; the model was not updated because no experiment below depends on the difference.) |
 
 Note what **F** does not contain: no rule for `clone`, `setuid`, `setgroups`,
 `chown`, `lchown` or `mknod`. Those denials all fall out of **N**.
@@ -325,6 +331,47 @@ child exits 0 whether the mount fails or not — the row prints `OK` directly ab
 the grandchild's `FAIL errno=1 EPERM` line, in `results/census.txt` and on the
 target alike. The bwrap differential, not that row, is what carries §3.4's
 conclusion, and it holds.
+
+### 3.7a Second-session extensions (2026-09-07, same runtime class)
+
+A second target session, held to test seven further tools at their claims
+(`verification/real/ext*.txt`), sharpened the mechanism model itself:
+
+1. **F's deny list grows by two.** `process_vm_readv`/`process_vm_writev`
+   return `EPERM` even for a nonexistent pid (the kernel would answer
+   `ESRCH`), so they are filtered pre-execution like `ptrace`. `pidfd_getfd`,
+   `process_madvise` and `kcmp` return argument-shaped errnos for bogus
+   inputs — executed, not filtered.
+2. **The new mount API is half-open (F13).** `fsopen`, `fsconfig(CREATE)`,
+   `fsmount` and `open_tree(OPEN_TREE_CLONE)` succeed — and since 6.18's
+   `fsmount` opens with the same `may_mount()` check `move_mount` and
+   `unshare(CLONE_NEWNS)` use, their success proves the capability check
+   passes on this runtime. `mount_setattr` succeeds too (propagation changes
+   included). `move_mount` returns `ENOENT` for a nonexistent destination —
+   proof the syscall executes and the filter does not name it — and `EPERM`
+   for real ones. Kernel source attribution: `move_mount`'s only pre-LSM
+   `EPERM` is `may_mount()`, which provably passes, and `do_move_mount()`
+   contains no `EPERM` site; the denial is the LSM hook `security_move_mount()`.
+   The same `EPERM` appears inside a `clone(CLONE_NEWNS)` child we own. M
+   therefore denies *attach*, not mount-namespace operations: §9.4's
+   "available namespace, unusable mount" gains its exact split.
+3. **Detached mounts are creatable but unusable.** `openat` on a detached
+   tmpfs or procfs fd fails `EACCES` (fstat shows a root-owned, sticky,
+   world-writable directory — DAC would allow);
+   an LSM resolving paths cannot resolve a detached mount, so every handled
+   access is denied. Landlock in 6.18 hooks exactly the right set
+   (`file_open`, `path_*`, `sb_mount`, `move_mount`, `sb_pivotroot`, …) for
+   one ruleset to explain every M observation to date.
+4. **The notif-supervisor surface is open (F14).** Installing a further
+   seccomp filter with `SECCOMP_FILTER_FLAG_NEW_LISTENER` works, the
+   notification round-trip works, and `SECCOMP_IOCTL_NOTIF_ADDFD` injects a
+   supervisor-opened fd into the trapped child (verified end-to-end).
+   `/proc/<pid>/mem` of a child opens and reads correctly — but not for
+   writing (`EACCES`, the write allowlist again). Combined with F's
+   `process_vm_*` denial this yields a precise viability statement for the
+   supervisor tier of §10.3: **intercept, read arguments, and inject fds —
+   yes; write child memory — no.** pathshim and sandlock (§11a) are field
+   measurements of exactly that boundary.
 
 ---
 
@@ -1016,6 +1063,11 @@ go os.Lchown -> <nil>
 change it. Any design that relies on libc interposition must treat Go binaries,
 static binaries, and any dynamically linked program that issues raw syscalls as
 out of scope — and must be able to *say so* rather than failing opaquely (§10.3).
+The same lesson repeats one tier down on seccomp-notif supervisors: the runtime's
+filter denies `process_vm_readv`/`writev`, so a supervisor cannot read path
+arguments that way — `/proc/<pid>/mem` read-only is the surviving channel — and a
+supervisor that falls back silently instead of saying so produces false safety
+reports (§3.7a, §11a: pathshim vs. sandlock).
 
 ### 9.4 Mounts: available namespace, unusable mount
 
@@ -1239,6 +1291,40 @@ exception, and the finding that costs the most debugging time, is that image
 *extraction* straddles both — it is file I/O that happens to call `chown`, and that
 is where four separate tools stop.
 
+### 11a The extended corpus (second target session, 2026-09-07)
+
+Seven more tools were run at their claims on the target — fetched as source, built
+where a build was possible (C: gcc on the runtime; Rust: 1.98.1 via rustup to
+`/workspace`), executed unmodified. Evidence: `verification/real/ext*.txt`. The
+session also produced the kernel findings F13–F14 recorded in §3.7a.
+
+| Tool (revision) | Claim tested | Result on the target | Blocking wall |
+|---|---|---|---|
+| **udocker** 1.3.17 (`638bc42`) | "execute basic docker containers where docker is unavailable", multi-engine | pull/create work; **F1 (fakechroot) runs containers end-to-end**: `apk add` + `curl` HTTPS in alpine, echo in debian; needs `--allow-root` + `--user=0` (no-passwd root remap bug) | P1/P2 PRoot: `ptrace` (F). R1 runc: instant silent rc=4. dpkg-class payloads: interposer coverage (§10.3) |
+| **dockless** (`ed35b5d`) | docker/podman verbs over udocker+PRoot | CLI skeleton, guardrails and fail-fast behave exactly as documented; engine dead; hook contract dead | PRoot `ptrace` (F); `chown 999`/`mknod` in hooks (N) |
+| **rurima** (`30a0637`) | dockerhub pull + unpack + run via built-in ruri | `docker pull` dies in layer 0; `r` (run a prepared rootfs) works | `tar -xpf` as root → unmapped-gid `chown` (§9.1); non-root path needs proot (F) |
+| **ruri** 3.9.5 (`711673a`) | "better chroot", runs where namespaces are unavailable | **works unpatched**: chroot container, per-mount failure warnings, unshare mode probed then refused, `apk`+`curl` end-to-end; needs host resolv.conf install; `/dev/null` absent (shell-created regular-file trap) | none fatal; degraded by design |
+| **treesandbox** (`71acbee`) | rootless multi-layer sandbox | dead before any namespace call: `pwd.getpwuid(0)` KeyError, then missing `/etc/hostname`; its layers are `unshare`+`mount` (both F) with no fallback | environment + F |
+| **sandlock** 0.8.7 (`841265d`) | confinement via Landlock + seccomp-bpf + seccomp-notif | Landlock/seccomp/resource-limit tiers work unpatched; notif-mediated COW, chroot mounts and net ACL degrade — `--dry-run` **fails open** (reports "no filesystem changes" while changing files under a write grant; fails closed without one), network fails closed; `/proc` virtualization inferred degraded, not separately captured | `process_vm_readv` (F) and `/proc/pid/mem` O_RDWR (M) |
+| **pathshim** (`8bcc34e`) | bind mappings without mount privileges, via seccomp-notif | `probe` → `passthrough` with reason `EPERM`, run degrades to unmapped passthrough — honest, exactly as its README promises | `process_vm_readv` (F); `/proc/pid/mem` write (M) |
+
+Three readings follow. **(1) The §10 ladder now has unpatched inhabitants on every
+rung below `namespace`**: ruri is a working `chroot`-tier runtime, udocker F1 a
+working `interpose`-tier one, pathshim a working *probe-and-degrade* for the
+notif tier — the corpus no longer needs its own patch to demonstrate any mode
+below namespaces. **(2) The interpose tier's ceiling repeats one rung down**
+(§9.3 → seccomp-notif): both pathshim and sandlock read path arguments with
+`process_vm_readv`; here that syscall is filtered, `/proc/pid/mem` read is not.
+The two tools' opposite fallback directions — pathshim refuses the mode, sandlock
+continues the syscall directly — are a live demonstration of §10.1's rule that
+degradation must be *chosen and reported*, because the silent variant
+(sandlock's dry-run) is not merely weaker, it is *false*. **(3) The §9.1
+ownership wall now has a fifth tenant** — rurima's `tar -xpf`-as-root extraction
+joins lilipod's tar, containers/storage's applier, Apptainer's Go unpacker and
+pacman's `DownloadUser`: extraction code written for real root cannot be rescued
+by privileges this runtime grants — only ownership-neutral extraction (udocker,
+lilipod v2) or interposition (fakechroot) clears it.
+
 ---
 
 ## 12. Limitations
@@ -1293,10 +1379,43 @@ any implementation must be measured against rather than merely cited:
 - **[udocker](https://github.com/indigo-dc/udocker)** already combines image handling
   with several execution engines — including PRoot and Fakechroot — selected per
   environment. It is the closest existing system to §10 and the obvious comparison
-  point for a multi-mode runtime.
+  point for a multi-mode runtime. **Measured on the target (§11a):** its PRoot
+  engines die at the same `ptrace` filter that stops PRoot everywhere here, and its
+  F1 fakechroot engine *runs containers unpatched* — pull, package install, network
+  — through exactly the interpose tier §10.3 specifies, including the tier's
+  predicted ceiling (dpkg-class workloads trip un-interposed paths). udocker's
+  per-container `--execmode` switch is also the mode-selector design §10.2 asks
+  for, at container granularity. Caveat for adopters: upstream has been dormant
+  since 2024-08 (last merge `638bc42`); it still runs on Python 3.14, but the
+  no-passwd-as-root remap bug fixed here by `--user=0` is upstream and unpatched.
 - **[fakechroot](https://github.com/dex4er/fakechroot)** is the libc-interposition
   implementation of §10.3's `interpose` mode. §9.3's result bounds what it can reach
-  in a Go-heavy container ecosystem.
+  in a Go-heavy container ecosystem. **Measured (§11a):** the bound is real but the
+  tier is live — busybox/musl payloads complete package installs under it.
+
+Two further projects are now *measured baselines* rather than citations, from the
+extended corpus of §11a:
+
+- **[ruri](https://github.com/RuriOSS/ruri)** is a working `chroot`-tier runtime on
+  this runtime class: probe-then-refuse for unshare mode, per-mount failure
+  warnings, and a docker-image-facing companion ([rurima](https://github.com/RuriOSS/rurima)
+  — which dies at the §9.1 extraction wall as root). ruri is the strongest existing
+  "better chroot" the §10 `chroot` tier should be compared against.
+- **[pathshim](https://github.com/compforge/pathshim)** is the strongest existing
+  implementation of the seccomp user-notification supervisor tier: it probes the
+  node, reports the mode and degradation reason, and never silently maps paths.
+  On this runtime it degrades to passthrough for exactly the reason §3.7a predicts
+  (`process_vm_readv` filtered). Its probe subcommand is a reusable preflight for
+  the whole tier. **[sandlock](https://github.com/multikernel/sandlock)**
+  demonstrates the same tier's danger when degradation is silent: its dry-run
+  reports "no filesystem changes" while writing files (§11a) — the field's best
+  argument for §10.1's loud-degradation rule.
+
+[dockless](https://github.com/ylang-ylang/dockless) (docker verbs over udocker)
+and [treesandbox](https://github.com/garywill/treesandbox) (rootless namespace
+tree sandbox) complete the measured corpus: the former is a sound CLI-honesty
+layer over a dead-here engine, the latter an unshare/mount architecture with no
+fallback — the §8.1 wall, one project later.
 
 [fakeroot](https://tracker.debian.org/pkg/fakeroot) virtualizes file ownership through
 the same interposition mechanism and is the model for §10.4's sidecar.
@@ -1340,4 +1459,5 @@ model, the toggles, and what each section answers.
 | `arch` | a distribution rootfs by chroot; the two pacman preconditions; `/etc/mtab` | §8.3 |
 | `sources` | the upstream lines the `[S]` claims rest on | §5, §8.1, §8.4, §9.2 |
 | `verification/real/` | target-run evidence: identity, bare census, spawn/interpose/lookpath, writability, bwrap, pacman.conf, lilipod v2 lifecycle | §3.1, §3.7, §5.4, §5.5, §8.3 |
+| `verification/real/ext*.txt` | second target session: kernel-feature survey (new mount API, notif/ADDFD, memory-access split) and the seven-tool extended corpus | §3.7a, §11a |
 | `arithmetic` | unit and size conversions | §8.4 |

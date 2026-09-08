@@ -84,3 +84,20 @@ the child's exit code, and the child exited 0 regardless of the mount verdict �
 row said `OK` directly above the grandchild's `FAIL errno=1 EPERM` line. `check`
 now exits non-zero on failure, so the row reports the verdict (as
 `FAIL exit status 1`) on runtimes where the mount is denied.
+
+## Extended corpus evidence (`real/ext*.txt`, second target session 2026-09-07)
+
+Seven further tools were fetched, built where buildable, and tested at their
+claims on the target itself; plus a kernel-feature survey of the surfaces those
+tools depend on:
+
+| File | Establishes |
+|---|---|
+| `extkernel-newapi.txt` | filter-vs-LSM separation by bogus-argument probes; `process_vm_*` added to F's deny list; the new mount API split (fsopen/fsmount/open_tree/mount_setattr OK, `move_mount` EPERM traced to `security_move_mount`, i.e. M — inside a clone(NEWNS) child too); detached mounts creatable but not openable (EACCES); seccomp user-notification + `ADDFD` fd injection works; `/proc/<pid>/mem` read-only works, read-write denied (M) |
+| `extkernel-sources.txt` | the v6.18.39 kernel excerpts those attributions rest on: `fsmount`/`move_mount` both start with `may_mount()`; `vfs_move_mount` calls `security_move_mount()`; `do_move_mount` has zero `EPERM` sites; Landlock's v6.18 hook list includes `move_mount`/`sb_mount`/`sb_pivotroot`/`file_open`/`path_*` |
+| `ext-udocker.txt` | udocker 1.3.17: pull/create work (ownership-neutral tar by design); P1/P2 dead at ptrace (F); **F1 fakechroot works unpatched** (`--user=0` to clear the no-passwd remap); apk/curl/htop end-to-end in alpine; debian glibc runs, dpkg unpack trips interposer coverage; R1 hangs |
+| `ext-dockless.txt` | docker-CLI shim over udocker: installer/guardrails/fail-fast work as documented; engine dead (PRoot/ptrace) and hook contract dead (chown 999 EINVAL, mknod EPERM) |
+| `ext-rurima-ruri.txt` | rurima pull dies at the §9.1 unmapped-gid wall (`tar -xpf` as root); `rurima r` works; **ruri 3.9.5 works unpatched** (per-mount warnings, unshare probed-then-refused, apk+curl end-to-end; /dev/null regular-file trap; no resolv.conf install) |
+| `ext-treesandbox.txt` | dead before any namespace call (`getpwuid(0)` KeyError, missing `/etc/hostname`); its layer tree is unshare+mount based — F denies both; no fallback path in code |
+| `ext-sandlock.txt` | Landlock+seccomp+resource-limit tiers work unpatched; every notif feature that reads child memory degrades — COW/`--dry-run` **fail open with a false "no changes" report**, network ACL fails closed, `--chroot` exec fails (memory writes denied) |
+| `ext-pathshim.txt` | `pathshim probe` -> `passthrough` with reason `EPERM` (its `process_vm_readv` leg is F-filtered; `/proc/pid/mem` write leg M-denied); degradation honest, command never retried in another mode |

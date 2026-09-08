@@ -1,0 +1,85 @@
+### sandlock 0.8.7 (multikernel @ 841265d) on the target (2026-09-07)
+
+Built on the runtime with cargo 1.98.1 (rustup installed to /workspace).
+Claims (README): confinement via Landlock (fs+net+IPC), seccomp-bpf, and
+seccomp user notification (resource limits, IP enforcement, /proc
+virtualization); COW filesystem; no root, no cgroups, no containers.
+
+## what works here
+
+Landlock rulesets install and enforce (stacked on the sandbox's own
+restrictions):
+
+    $ sandlock run -r /usr -r /bin -r /lib -r /lib64 -r /etc -w /tmp -- sh -c \
+        'echo SANDLOCK-RUN-OK; ls /tmp | head -2; echo x > /workspace/probe/should-fail...'
+    SANDLOCK-RUN-OK
+    (tmp listing)
+    WRITE-BLOCKED-AS-CONFIGURED
+    (/dev/null redirection denied — not in write set: policy working)
+
+seccomp-bpf deny stacking:
+
+    --extra-deny-syscall mount -> `mount: /tmp: permission denied.`
+
+Resource limits (no path reads needed — brk/mmap-class mediation):
+
+    -m 100M + python bytearray(200_000_000) -> killed, rc=1, no completion print
+
+## what silently degrades here (seccomp-notif handlers that must read the
+   child's path arguments use process_vm_readv — filter F denies it; the
+   handlers' fallback is Continue = kernel executes the syscall directly)
+
+COW staging is a no-op and --dry-run is UNSAFE (fail-open when the write path
+is Landlock-granted, e.g. via -w):
+
+    $ echo ORIGINAL > cowtest/file.txt
+    $ sandlock run --dry-run --workdir cowtest -r ... -w cowtest -- sh -c \
+        'echo DRYRUN-EDIT > cowtest/file.txt; cat cowtest/file.txt'
+    DRYRUN-EDIT
+    sandlock: dry-run: no filesystem changes
+    $ cat cowtest/file.txt
+    DRYRUN-EDIT                    <- file CHANGED on disk during a "dry run"
+
+(The write went straight to the filesystem under the -w grant; the supervisor
+never saw the path. Without -w the identical COW invocation instead fails
+closed — `Permission denied` from Landlock after the notif handler's Continue —
+first COW test above. Either way the supervisor never intercepts.)
+
+Network ACL fails CLOSED (over-blocking):
+
+    --net-allow <real-ipv4>:443 + curl --resolve to that ip -> HTTP 000 (blocked)
+    --net-allow <other-ip>:443  + same                          -> HTTP 000 (blocked)
+
+(everything is blocked, including the allowed destination — connect()
+mediation cannot read the sockaddr, so the allow path is unreachable too)
+
+--chroot / image modes: exec fails — mapped exec needs child-memory writes
+(attribution: sandlock rewrites the exec pathname in the child's memory —
+notif.rs write_child_mem -> process_vm_writev, with a /proc/<pid>/mem
+FOLL_FORCE variant for read-only path literals, remote.rs:79; both channels
+are denied here. The exact errno depends on the payload, which tracks which
+leg fails first):
+
+    --chroot <alpine-rootfs> -r / ... -- /bin/echo    -> execvp EACCES (dynamic)
+    --chroot <static-rootfs>  -r / ... -- ./echo-static -> execvp ENOENT (static)
+
+(process_vm_writev is F-filtered; /proc/<pid>/mem O_RDWR is M-denied —
+extkernel-newapi.txt §3. The static/dynamic errno difference tracks whether
+the interpreter or the pathname rewrite fails first.)
+
+/proc virtualization: not separately captured; it uses the same read_path
+mechanism as COW (EPERM -> Continue), so it is expected to fall back to the
+real /proc here — treat as inferred, not measured.
+
+## verdict
+
+Landlock + seccomp-bpf + resource-limit tiers: work unpatched here — a
+second-generation confinement tool that happens to need nothing this runtime
+denies. Every notif-mediated feature that reads child memory (COW, dry-run,
+chroot mounts, net allow-list, /proc virtualization) is unavailable, and two
+of them degrade in the unsafe direction: COW/dry-run fail open (and report
+"no changes" while changing files), network fails closed. On this runtime
+sandlock is usable as a Landlock+seccomp wrapper, not as its advertised
+supervisor-driven sandbox — the exact split the paper's §10.3 predicts for
+interpose-class designs, one layer down (notif-supervision instead of
+LD_PRELOAD).
