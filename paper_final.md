@@ -294,6 +294,13 @@ both would, **N** is listed because it acts first and needs no filter rule.
 | write into a directory owned by an **unmapped** id | OK | `EACCES` | `EACCES` | **N** |
 | write into a directory owned by a **mapped** id (`/` on the target) | OK | OK | OK | **M** denies it on the target (§3.7) |
 
+Two things this table does not cover, both deliberate. It uses the classic mount
+API only; the `fsopen`/`fsmount`/`open_tree`/`move_mount` family splits along a
+different axis and has its own table in §9.4. And its **N** column is the model
+*without* a mount namespace, which is why every mount row reads `EPERM` there: with
+`CONFINE_MOUNTNS` the creation half becomes `OK` while the attach half does not
+(§3.2, F16). Both facts are measured by `run.sh attribute`.
+
 Two rows carry most of the weight.
 
 **`mount(MS_SLAVE, /)` inside a mount namespace the process just created.** Under
