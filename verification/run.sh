@@ -9,8 +9,8 @@
 #   ./run.sh                 everything
 #   ./run.sh census spawn    only those sections
 #
-# Sections: census spawn bwrap tar libarchive lilipod podman interpose
-#           lookpath arch sources arithmetic
+# Sections: census attribute spawn bwrap tar libarchive lilipod podman
+#           interpose lookpath arch sources arithmetic
 #
 # Requires: go, gcc, docker (running), network for image pulls. Sections that
 # need a missing dependency print SKIP and continue.
@@ -50,6 +50,19 @@ MODEL=(CONFINE_USERNS=1 CONFINE_EXTRA_GROUP=42 CONFINE_SECCOMP=1)
 USERNS_ONLY=(CONFINE_USERNS=1 CONFINE_EXTRA_GROUP=42)
 SECCOMP_ONLY=(CONFINE_SECCOMP=1 CONFINE_DENY_CLONE_NS=1 CONFINE_DENY_SETGROUPS=1
 	CONFINE_DENY_MKNOD=1 CONFINE_DENY_CHOWN_NONZERO=1 CONFINE_DENY_SETUID_NONZERO=1)
+# The target's own shape: map 0->1000, a mount namespace owned by that user
+# namespace (without which may_mount() fails and fsopen/fsmount return EPERM),
+# and process_vm_readv/writev in the filter. ../experiments/ composes the same
+# thing with the filesystem topology as well.
+TARGET_SHAPED=(CONFINE_USERNS=1 CONFINE_MAP_HOSTID=1000 CONFINE_MOUNTNS=1
+	CONFINE_EXTRA_GROUP=42 CONFINE_SECCOMP=1 CONFINE_DENY_PROCESS_VM=1)
+
+# The uid-1000-owned directory the census writes into has to be built by
+# something that can chown, which the confined process cannot be. Build it
+# before any section runs: created late, it made the unconfined census report a
+# denial that was really a missing fixture.
+mkdir -p /tmp/squash-probe && chown 1000:1000 /tmp/squash-probe 2>/dev/null ||
+	echo "note: cannot chown the squash fixture; that census row will report SKIP"
 
 # ---------------------------------------------------------------- census
 if sel census; then
@@ -60,7 +73,6 @@ if sel census; then
 		"$OUT/probe" census
 		echo
 		echo "## user namespace only (map 0->0, setgroups=deny, holds gid 42)"
-		mkdir -p /tmp/squash-probe && chown 1000:1000 /tmp/squash-probe 2>/dev/null
 		env "${USERNS_ONLY[@]}" "$OUT/confine" "$OUT/probe" id
 		env "${USERNS_ONLY[@]}" "$OUT/confine" "$OUT/probe" census
 		echo
@@ -78,6 +90,28 @@ if sel census; then
 			echo "# model:"; env "${MODEL[@]}" "$OUT/confine" "$OUT/cprobe"
 		fi
 	} 2>&1 | tee "$RES/census.txt"
+fi
+
+# ---------------------------------------------------------------- attribute
+if sel attribute; then
+	say "filter or kernel? bogus-argument probes"
+	{
+		echo "## unconfined: every syscall executes, so every errno is argument-shaped"
+		"$OUT/probe" attribute
+		echo
+		echo "## the target's shape: map 0->1000, own mount ns, filter incl. process_vm_*"
+		env "${TARGET_SHAPED[@]}" "$OUT/confine" "$OUT/probe" attribute
+		echo
+		echo "## the same without the mount namespace: fsopen/fsmount lose may_mount()"
+		env CONFINE_USERNS=1 CONFINE_MAP_HOSTID=1000 CONFINE_EXTRA_GROUP=42 \
+			CONFINE_SECCOMP=1 CONFINE_DENY_PROCESS_VM=1 \
+			"$OUT/confine" "$OUT/probe" attribute | grep -E 'fsopen|fsmount|open_tree'
+		echo
+		echo "## mechanism M, where the kernel has landlock"
+		env "${TARGET_SHAPED[@]}" CONFINE_LANDLOCK=/tmp:/dev/shm \
+			"$OUT/confine" "$OUT/probe" attribute 2>&1 |
+			grep -aE 'move_mount|detached|/proc/self/mem|landlock|unavailable'
+	} 2>&1 | tee "$RES/attribute.txt"
 fi
 
 # ---------------------------------------------------------------- spawn

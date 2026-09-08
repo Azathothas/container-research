@@ -8,4 +8,4 @@ rc=2
 rc=0
 resulting ownership:
 total 4
--rw-r--r-- 1 0 0 7 Sep  7 02:18 shadow
+-rw-r--r-- 1 0 0 7 Sep  8 02:31 shadow

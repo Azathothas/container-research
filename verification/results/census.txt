@@ -136,7 +136,7 @@ clone(CLONE_NEWUSER)               OK
 mount(tmpfs,/mnt)                  FAIL errno=1 EPERM
 mount(MS_SLAVE,/)                  FAIL errno=1 EPERM
 mount(MS_SLAVE,/)                  FAIL errno=1 EPERM
-mount(MS_SLAVE,/) in clone(NEWNS)  OK
+mount(MS_SLAVE,/) in clone(NEWNS)  FAIL exit status 1
 pivot_root(/tmp,/tmp)              FAIL errno=1 EPERM
 ptrace(PTRACE_TRACEME)             FAIL errno=1 EPERM
 mknod(chr 1:3 /tmp/nodprobe)       FAIL errno=1 EPERM

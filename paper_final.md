@@ -1846,6 +1846,7 @@ model, the toggles, and what each section answers.
 | Section | Establishes | Paper |
 |---|---|---|
 | `census` | mechanism attribution for every operation; the identity block | §3.1, §3.3, §3.5 |
+| `attribute` | filter versus kernel, by bogus argument; the new mount API split; and the mount-namespace differential that F16 rests on | §3.7a, §3.7b, §9.4 |
 | `spawn` | which `SysProcAttr` shapes call `setgroups` | §9.2 |
 | `bwrap` | that bubblewrap's message distinguishes clone from mount | §3.4, §8.1 |
 | `tar` | the ownership wall, from the namespace alone | §9.1 |

@@ -1,6 +1,6 @@
 ## symlinks in the shipped rootfs
 total=1326 absolute=6
-lrwxrwxrwx 1 root root 12 Sep  7 02:18 /home/user/container-research/verification/build/archroot/etc/mtab -> /proc/mounts
+lrwxrwxrwx 1 root root 12 Sep  8 02:32 /home/user/container-research/verification/build/archroot/etc/mtab -> /proc/mounts
 ## A. plain chroot, no /proc, mtab left as the shipped dangling symlink
 NAME="Arch Linux"
 PRETTY_NAME="Arch Linux"
@@ -8,7 +8,7 @@ uid=0(root) gid=0(root) groups=0(root),65534(nobody)
 packages: 137
 ## B. pacman -Sy with the rootfs as shipped
 :: Synchronizing package databases...
-error: failed to chown temporary download directory /var/lib/pacman/sync/download-iNNXcP: Invalid argument
+error: failed to chown temporary download directory /var/lib/pacman/sync/download-X4eGoH: Invalid argument
 error: failed to synchronize all databases (failed to initialize download)
 ## C. same after disabling DownloadUser (an unmapped uid)
 :: Synchronizing package databases...

@@ -1,0 +1,43 @@
+## unconfined: every syscall executes, so every errno is argument-shaped
+mount(2) bogus target              FAIL errno=2 ENOENT
+umount2(2) bogus target            FAIL errno=2 ENOENT
+pivot_root(2) bogus paths          FAIL errno=2 ENOENT
+process_vm_readv(bogus pid)        FAIL errno=3 ESRCH
+pidfd_getfd(-1,-1) [control]       FAIL errno=9 EBADF
+kcmp(-1,-1,...) [control]          FAIL errno=38 ENOSYS
+fsopen(tmpfs)                      OK
+fsmount(tmpfs)                     OK
+open_tree(/tmp, CLONE)             OK
+move_mount(-> bogus dest)          FAIL errno=2 ENOENT
+move_mount(-> /tmp/mm-probe)       OK
+openat(detached tmpfs, O_DIRECTORY) OK
+seccomp(NEW_LISTENER)              OK
+open /proc/self/mem O_RDONLY       OK
+open /proc/self/mem O_RDWR         OK
+landlock_create_ruleset(VERSION)   FAIL errno=38 ENOSYS
+
+## the target's shape: map 0->1000, own mount ns, filter incl. process_vm_*
+mount(2) bogus target              FAIL errno=1 EPERM
+umount2(2) bogus target            FAIL errno=1 EPERM
+pivot_root(2) bogus paths          FAIL errno=1 EPERM
+process_vm_readv(bogus pid)        FAIL errno=1 EPERM
+pidfd_getfd(-1,-1) [control]       FAIL errno=9 EBADF
+kcmp(-1,-1,...) [control]          FAIL errno=38 ENOSYS
+fsopen(tmpfs)                      OK
+fsmount(tmpfs)                     OK
+open_tree(/tmp, CLONE)             FAIL errno=22 EINVAL
+move_mount(-> bogus dest)          FAIL errno=2 ENOENT
+move_mount(-> /tmp/mm-probe)       OK
+openat(detached tmpfs, O_DIRECTORY) OK
+seccomp(NEW_LISTENER)              OK
+open /proc/self/mem O_RDONLY       OK
+open /proc/self/mem O_RDWR         OK
+landlock_create_ruleset(VERSION)   FAIL errno=38 ENOSYS
+
+## the same without the mount namespace: fsopen/fsmount lose may_mount()
+fsopen(tmpfs)                      FAIL errno=1 EPERM
+fsmount(tmpfs)                     FAIL errno=1 EPERM
+open_tree(/tmp, CLONE)             FAIL errno=1 EPERM
+
+## mechanism M, where the kernel has landlock
+confine: landlock unavailable (function not implemented): the kernel needs CONFIG_SECURITY_LANDLOCK and landlock in lsm=
