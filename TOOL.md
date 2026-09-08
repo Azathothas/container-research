@@ -20,11 +20,13 @@ Before the recommendation, not after it.
 |---|---|
 | **The third mechanism (M) has never been verified on a machine you can run.** The write allowlist, the `move_mount` denial and the `/proc/pid/mem` O_RDWR refusal come from one session on one machine plus kernel source. The reconstruction can model M with Landlock, but the kernel it was developed on has none, so those rows are `SKIP`. | Do not hard-code the allowlist `{/tmp,/dev/shm,/workspace,/state}`. **Probe it.** §6.1. |
 | **Nobody has built podbox.** Every line of §5 and §6 is a specification. No milestone has been implemented, no acceptance test has ever passed. | Treat estimates as estimates. Where a design choice looks wrong once you have code in front of you, the code wins. |
+| **No dependency has been chosen.** §3.5 is a policy and a list of areas to sweep. Nothing in it has been measured for size, licence, or maintenance state. | ⛔ Do not `cargo add` from that table. Each one is a `TODO/` entry that closes with a measurement. |
+| **The corpus has not been read to the depth `docs/methodology/references.md` requires.** §7 records the depth actually reached per reference, and most rows say "measured on target, not read here". | M-1 exists to fix that, and it comes before any code. |
 | **The seven-tool corpus (`paper_final.md` §11a) is one session, unrepeatable.** Only two of its mechanisms were checked against upstream source. | Re-verify any verdict you are about to build on. §7 gives commits. |
 | **The lilipod v2 patch was measured on the target, not here.** Its lifecycle capture contains a *failed* run before the passing one — it is racy under a fixed sleep. | It is a source of lessons, not a seed. §3 explains why you will not be reusing its code at all. |
 | **No timing in this corpus is a benchmark.** No repetition counts, no variance, no defined boundary. | Do not quote "0.088 s warm launch" at anyone. Measure your own. |
 | **Whether `-t` can ever work here is unresolved.** The target's mount table shows no `/dev/ptmx`; an earlier account asserts the outer one works and published no capture. | §6.5. One `stat("/dev/ptmx")` on the target settles it. Until then, probe and refuse. |
-| **The previous revision of the research got six claims wrong**, corrected in this one. | That is the only honest estimate of how many are still wrong. Assume more remain. |
+| **The previous revision of this document specified the wrong language and a dependency list that read as a decision.** Both are corrected here (§3, §3.5), and the research revision before this one got six claims wrong. | That is the only honest estimate of how many are still wrong. Assume more remain, in this file as much as in the paper. |
 
 ---
 
@@ -72,10 +74,20 @@ The reader runs as a gate.
 ### Licence
 
 **0BSD**, for this repository and for `podbox`. Genuinely free: no attribution
-clause, no notice retention, no share-alike. Everything vendored must be
-licence-compatible with redistribution under 0BSD, and the determination —
-per tree, with where it came from — belongs in `TODO/reference-map.md` before
-the tree is used, not after.
+clause, no notice retention, no share-alike.
+
+⚠ **Vendored code keeps its own licence and its own notices.** 0BSD is the
+licence on *our* work; it does not relicense somebody else's. MIT and
+Apache-2.0 code can be vendored and redistributed inside a 0BSD project, and
+its notice stays with the files it covers — `THIRD_PARTY.md` at the root, as
+[`Azathothas/bit-cli`](https://github.com/Azathothas/bit-cli) does it.
+
+⛔ **The determination is made before the tree is used, not after**, per tree,
+with where it came from, in `TODO/reference-map.md`. Two traps that have already
+appeared in this corpus: a crate whose `Cargo.toml` names a licence with **no
+licence file in the tree** (`memfd-exec`), and a tree with **no statement
+anywhere**. Neither is "probably fine". Record what you actually found, flag it,
+and do not vendor an unresolved one.
 
 ---
 
@@ -87,6 +99,9 @@ the tree is used, not after.
 | ten minutes | §2, §3, §4 (architecture), §5 (build order) |
 | the implementation to do | all of it, in order, then `paper_final.md` §9 and §10 |
 | a reason to distrust this | §0, then §7 (provenance and verdicts), then run `experiments/30-attribution-census.sh` |
+
+⛔ **Whatever your budget, read §0.5 first.** It is the shortest section and it
+is the one that binds.
 
 ---
 
@@ -372,7 +387,7 @@ podbox (launcher, pid P)
 ```
 podbox/
   crates/
-    podbox-cli/        clap surface, the parity table of §6.8, exit codes
+    podbox-cli/        argument surface, the parity table of §6.8, exit codes
     podbox-probe/      §6.1 — the probe set, disposable children, mode selection
     podbox-image/      §6.2 — registry client, manifests, store, digests
     podbox-extract/    §6.3 — layers, whiteouts, ownership sidecar, path safety
@@ -393,6 +408,46 @@ the tree: it runs inside other people's processes.
 
 Milestones in dependency order. Each has an acceptance test that either passes or
 does not; **do not proceed on a milestone whose test has never run green.**
+
+### M-1 — the corpus and the work index. No podbox code at all.
+
+⛔ **This milestone comes before any code and it is not skippable.** Everything
+after it depends on `TODO/` existing and being right, and on the references
+having been *read* rather than cited.
+
+What it produces:
+
+1. **`docs/` in the new tree**, copied from this repository, plus `LICENSE`
+   (0BSD) and a `README.md` that says what the project is.
+2. **The corpus, per `docs/methodology/references.md`.** Every reference in §7
+   of this file, plus everything `paper_final.md` §13 names, fetched at a
+   commit, **read in three passes**, tracker included, kept somewhere a later
+   session can reach without re-fetching, and given exactly one verdict.
+   ⚠ **This is where the value is.** Several of these trees carry techniques
+   that are within reach of being novel and that took real time to find once —
+   the bogus-argument mechanism discriminator, ownership-neutral extraction as a
+   *design* rather than a workaround, probe-then-refuse, per-mount warning
+   degradation, reverse path mapping, the memfd/userland-exec ladder. Losing
+   them to a skim means rediscovering them, and rediscovery is measured in
+   sessions.
+3. **`TODO/` per `docs/methodology/work-todo.md`**: `INDEX.md`, `PROGRESS.md`,
+   `RULES.md`, one `<category>.md` per area of §4.3, an entry per item of §5 and
+   §6 written per `docs/methodology/authoring.md` — **Source, Category,
+   Priority, Effort, Status, Problem, Premise, Approach, Decision, Prove** — and
+   `reference-map.md` carrying the corpus with its licence determinations.
+4. **The two count scripts** (`work-todo.md`'s writer and reader), with the
+   reader wired as a gate.
+5. **The repository skeleton**: the workspace layout of §4.3,
+   `rust-toolchain.toml`, `.cargo/config.toml`, a CI that runs the gate, and
+   `experiments/` seeded from this repository's.
+
+Acceptance: the reader script exits 0; every entry cites a path and line that
+resolves; `cargo build --release --target x86_64-unknown-linux-musl` succeeds on
+the empty skeleton; `readelf -l` on the result shows no `PT_INTERP`.
+
+⭐ **After M-1, no session needs to read the references again.** The entries
+carry what to do and which reference to read at which line. That is the whole
+point of paying for it once.
 
 ### M0 — the probe, and nothing else
 
@@ -810,13 +865,13 @@ second, and re-check the first before building on it.
 
 | project | commit | depth | verdict | what transfers |
 |---|---|---|---|---|
-| [pathmap](https://github.com/VHSgunzo/pathmap) (C, MIT) | `98b3d2a` | **built and run here**, symbol table read, `path-mapping.c` skimmed | **adopt** | The path half of §6.7, near-complete: 129 interposed entry points, `*at` resolution via `/proc/self/fd/<dirfd>`, and reverse mapping so `getcwd`/`readdir`/`readlink`/`realpath` report virtual names. **Measured: its bind view works here with `mount(2)` denied, and it leaves `chown` at `EINVAL`.** Its `ptrace` half is dead here — both channels (`ptrace`, `process_vm_readv`) are filtered. MIT, so the code is usable directly. |
+| [pathmap](https://github.com/VHSgunzo/pathmap) (C, MIT) | `98b3d2a` | **built and run here**, symbol table read, `path-mapping.c` skimmed | **adopt — vendor and patch** (§3.5) | The path half of §6.7, near-complete: 129 interposed entry points, `*at` resolution via `/proc/self/fd/<dirfd>`, and reverse mapping so `getcwd`/`readdir`/`readlink`/`realpath` report virtual names. **Measured: its bind view works here with `mount(2)` denied, and it leaves `chown` at `EINVAL`.** Its `ptrace` half is dead here — both channels (`ptrace`, `process_vm_readv`) are filtered. MIT, so the code is usable directly. |
 | [udocker](https://github.com/indigo-dc/udocker) (Python) | `638bc42` | source read at file and line; measured on target | **adopt (mechanism), confirms (design)** | `container/structure.py::_untar_layers` extracts with `--no-same-owner --no-same-permissions --exclude=.wh.*` and applies whiteouts itself in `_apply_whiteouts` — ownership-neutral by design, which is why it clears wall 1 unpatched. Its per-container `--execmode` switch is the mode selector §4.1 asks for, at container granularity. Its fakechroot engine tarballs are a viable shortcut for the interpose tier. ⚠ Upstream dormant since 2024-08. |
 | [ruri](https://github.com/RuriOSS/ruri) (C) | `711673a` | measured on target; not read here | **adopt (discipline)** | The strongest existing "better chroot": probes mount-ns support and *refuses* unshare mode cleanly rather than crashing, and turns every failed mount/`mknod` into a per-source-line warning while continuing. That is §6.1 and §6.9 in shipped C. Copy the style. |
 | [pathshim](https://github.com/compforge/pathshim) (Rust) | `8bcc34e` | measured on target; not read here | **adopt (protocol)** | `pathshim probe` → `passthrough` with a printed reason and a non-zero exit, then runs the command unmapped and never silently maps. That is the `supervise` rung's preflight, and its exit code is a drop-in gate. |
 | [sandlock](https://github.com/multikernel/sandlock) (Rust) | `841265d` | measured on target; not read here | **anti-pattern exhibit — keep** | Its notif handlers cannot read the child's path arguments here and fall back to *Continue*, so the kernel executes the syscall directly. `--dry-run` then reports `no filesystem changes` **while the file changes on disk**. This is the single best argument for §4.1's rule that a tier must be refused, not degraded per call. Its Landlock and seccomp-bpf tiers work unpatched. |
-| [memfd-exec](https://github.com/VHSgunzo/memfd-exec) (Rust) | `9708cb7` | source skimmed | **adopt** | `memfd_create` + `fexecve` behind a `Command`-shaped API. Two dependencies. `memfd_create+exec` is permitted on this runtime. |
-| [ulexec](https://github.com/VHSgunzo/ulexec) (Rust, MIT) | `00934f8` | source skimmed | **filed elsewhere** | Loads and runs an ELF from memory, over `memfd-exec` or `userland-execve`. Relevant to M7 packaging, not to the runtime. Same lineage as [sharun](https://github.com/VHSgunzo/sharun): both solve *relocation*, not filesystem virtualization. |
+| [memfd-exec](https://github.com/VHSgunzo/memfd-exec) (Rust) | `9708cb7` | source skimmed | **adopt — vendor and patch** (§3.5) | `memfd_create` + `fexecve` behind a `Command`-shaped API; `memfd_create+exec` is permitted on this runtime. It reaches us as a **fork**, maintained because the original is not, which is precisely why it is vendored rather than depended on. ⚠ Its `Cargo.toml` names MIT and the tree carries **no licence file** — resolve that in `reference-map.md` before use. |
+| [ulexec](https://github.com/VHSgunzo/ulexec) (Rust, MIT) | `00934f8` | source skimmed | **adopt — vendor and patch** (M7) | Loads and runs an ELF from memory, over `memfd-exec` or `userland-execve`. Same lineage as [sharun](https://github.com/VHSgunzo/sharun): both solve *relocation*, not filesystem virtualization, so neither substitutes for §6.7. `userland-execve` is the second fork to vendor. |
 | [lilipod](https://github.com/89luca89/lilipod) (Go) | `872755a` + `patches/lilipod-restricted-v2.diff` | patch read in full | **refused as a seed; lessons adopted** | Wrong language (§3). Its lessons are in §6.5 (the fabricated-root `exec` bug), §6.6 (the racy lifecycle), §6.4 (resolv.conf, `/dev/null`, whiteouts) and §6.3. ⚠ It also hard-requires `getsubids`/`newuidmap`/`newgidmap` on PATH before *any* subcommand including `pull` — a dependency check ahead of every syscall wall. |
 | [fakechroot](https://github.com/dex4er/fakechroot) / [fakeroot](https://tracker.debian.org/pkg/fakeroot) | — | not read | **adopt (model)** | fakechroot is the path half, fakeroot the ownership half, of §6.7. The split in §6.7's table *is* these two projects. |
 | [onelf](https://github.com/qaidvoid/onelf) (Rust) | HEAD 2026-09-07 | source read at file and line | **adopt (packaging)** | Launch ladder: memfd → FUSE → ephemeral tmpfs → private run directory → persistent cache. Its `symlink_target_within_root` refuses absolute targets and targets climbing above the package root. ⚠ The memfd rung requires a static, dependency-free entrypoint — a shell entrypoint skips it. |
