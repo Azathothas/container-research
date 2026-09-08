@@ -7,23 +7,29 @@ provides.
 
 | Path | Contents |
 |---|---|
-| [`paper_final.md`](paper_final.md) | The paper. Every empirical claim is tagged verified, source-established, or reported-and-unreproducible. |
-| [`verification/`](verification/) | The harness that produces the verified claims. `./verification/run.sh` |
-| [`verification/real/`](verification/real/) | Evidence captured **on the target runtime itself** (2026-09-07): identity maps, bare census, spawn/interpose matrices, writability map, bwrap differential, pacman.conf, and the lilipod v2 lifecycle run. `ext*.txt` add a second session: a kernel-feature survey (new mount API, seccomp user-notification, memory-access split) and seven further tools tested at their claims (udocker, dockless, rurima, ruri, treesandbox, sandlock, pathshim — paper §3.7a/§11a). |
-| [`patches/`](patches/) | `lilipod-restricted-v2.diff` — the published chroot adaptation, revised per this corpus's review. |
-| [`references/`](references/) | The earlier manuscripts and reviews this work reconciles, unmodified. |
+| [`paper_final.md`](paper_final.md) | **The paper.** Every empirical claim is tagged: reproduced here **[V]**, observed on the target **[T]**, established from source **[S]**, or reported-and-unreproducible **[R]**. |
+| [`TOOL.md`](TOOL.md) | **The build order for `podbox`**, the runtime the paper specifies. Written for an implementer with no prior context: the language decision, the component specs, the milestone tests, and the reference corpus with verdicts. |
+| [`experiments/`](experiments/) | The reconstruction: rebuilds the studied runtime's identity, mount topology and filter in a container on an ordinary host, and **asserts** every attribution row. Also the language comparison and the interpose-tier measurement. |
+| [`verification/`](verification/) | The model harness that produces the **[V]** claims. `./verification/run.sh` |
+| [`verification/real/`](verification/real/) | Captures from the target runtime itself (2026-09-07) — one session, not repeatable. Everything here is **[T]**. |
+| [`patches/`](patches/) | `lilipod-restricted-v2.diff` — a prior Go adaptation. Read for its lessons; `TOOL.md` §3 says why it is not the seed. |
+| [`references/`](references/) | The earlier manuscripts this work reconciles, unmodified. |
 
-The harness models the studied runtime as two mechanisms that can be switched on
-independently — a user namespace with a partial ID map, and a seccomp filter — so
-that each observed denial can be attributed to the one that actually causes it.
-That separation is what settles the questions the earlier manuscripts disagreed
-about. See [`verification/README.md`](verification/README.md).
+The runtime is modelled as three mechanisms that can be switched on independently — a
+user namespace with a partial ID map, a seccomp filter, and a path-scoped LSM — so
+that each observed denial can be attributed to the one that actually causes it. That
+separation is what settles the questions the earlier manuscripts disagreed about.
 
 ```sh
-./verification/run.sh                       # all sections
+./verification/run.sh                       # the model harness, all sections
 ./verification/run.sh census bwrap podman   # selected sections
+
+./experiments/10-build-target-image.sh      # the reconstruction
+./experiments/20-enter-target.sh            # a shell inside the reconstructed runtime
+./experiments/30-attribution-census.sh      # every attribution row, asserted
 ```
 
-Needs `go`, `gcc`, and a running `docker`; sections whose dependencies are missing
-print `SKIP`. Captured output from the run the paper cites is in
-`verification/results/`.
+Needs `go`, `gcc`, and a running `docker`; sections and scripts whose dependencies
+are missing print `SKIP` and exit 2 rather than passing. The reconstruction needs a
+kernel with Landlock to reproduce the third mechanism, and says so when it does not
+have one.

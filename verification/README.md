@@ -14,20 +14,25 @@ missing print `SKIP` and the rest continue. `dockerd` may need starting by hand.
 
 ## What it does
 
-The target runtime is modelled out of **two independent mechanisms**, which can
+The target runtime is modelled out of **three independent mechanisms**, which can
 be switched on separately. That separation is the point of the harness: a
-denial observed under both tells you nothing about which one caused it.
+denial observed under two of them tells you nothing about which one caused it.
 
 | Mechanism | `confine` flag | What it is |
 |---|---|---|
-| User namespace | `CONFINE_USERNS=1` | uid/gid maps covering only `0 -> 0`; `/proc/self/setgroups` = `deny`; optionally holding an unmapped supplementary group (`CONFINE_EXTRA_GROUP=42`) |
-| Seccomp filter | `CONFINE_SECCOMP=1` | `SECCOMP_SET_MODE_FILTER` + `PR_SET_NO_NEW_PRIVS`, inherited across `execve`, denying `unshare`, `setns`, `mount`, `umount2`, `pivot_root`, `ptrace` |
+| **N** — user namespace | `CONFINE_USERNS=1` | a uid/gid map with a single entry; `/proc/self/setgroups` = `deny`; optionally an unmapped supplementary group (`CONFINE_EXTRA_GROUP=42`). `CONFINE_MAP_HOSTID=1000` maps `0 -> 1000` as the target does; `CONFINE_MOUNTNS=1` adds a mount namespace owned by that user namespace, without which `may_mount()` fails and `fsopen`/`fsmount` return `EPERM`. |
+| **F** — seccomp filter | `CONFINE_SECCOMP=1` | `SECCOMP_SET_MODE_FILTER` + `PR_SET_NO_NEW_PRIVS`, inherited across `execve`, denying `unshare`, `setns`, `mount`, `umount2`, `pivot_root`, `ptrace`, and with `CONFINE_DENY_PROCESS_VM=1` also `process_vm_readv`/`writev` |
+| **M** — path-scoped LSM | `CONFINE_LANDLOCK=/tmp:/dev/shm:...` | a Landlock ruleset handling the filesystem write rights and granting them only beneath the listed paths. Reads stay unrestricted; every mount-topology operation is denied, because landlock's `sb_mount`/`move_mount` hooks refuse whenever any filesystem right is handled. Needs `CONFIG_SECURITY_LANDLOCK`; `confine` refuses loudly when the kernel has none. |
 
 Individual denials can be added or removed — `CONFINE_ALLOW_UNSHARE`,
 `CONFINE_ALLOW_MOUNT`, `CONFINE_ALLOW_PTRACE`, `CONFINE_DENY_CLONE_NS`,
 `CONFINE_DENY_SETGROUPS`, `CONFINE_DENY_MKNOD`, `CONFINE_DENY_CHOWN_NONZERO`,
 `CONFINE_DENY_SETUID_NONZERO` — which is how each ambiguous error is attributed
 to the syscall that actually produced it.
+
+To compose the target's own shape in one go, use
+[`../experiments/`](../experiments/), which also builds the filesystem topology
+and asserts the result.
 
 ## Sections
 
@@ -48,8 +53,12 @@ to the syscall that actually produced it.
 ## Components
 
 - `confine/` — the model runtime described above.
-- `probe/` — the operation census and the Go spawn matrix. Every check that
-  would mutate the caller runs in a freshly forked child.
+- `probe/` — the operation census (`probe census`), the bogus-argument
+  attribution probes (`probe attribute`) and the Go spawn matrix (`probe spawn`).
+  Every check that would mutate the caller runs in a freshly forked child.
+  `probe check <name>` exits 1 on a denial and **2 when a precondition is
+  missing**, so a parent that reads the exit code gets the operation's verdict
+  and "could not run" never reads as "denied".
 - `cprobe/` — a single-threaded C probe. Go cannot probe
   `unshare(CLONE_NEWUSER)`: the kernel refuses it for any multithreaded process
   with `EINVAL` regardless of policy, so a Go verdict on that flag is an
@@ -79,11 +88,28 @@ matrices (`spawn.txt`, `interpose.txt`), the path-scoped write policy
 configuration (`pacman-conf.txt`), the `/tmp` capacity vs payload fact
 (`tmp-enospc.txt`), and the lilipod v2 lifecycle (`lilipod-v2-lifecycle.txt`).
 
-Note on `probe`: the `mount(MS_SLAVE,/) in clone(NEWNS)` row historically reported
-the child's exit code, and the child exited 0 regardless of the mount verdict — the
-row said `OK` directly above the grandchild's `FAIL errno=1 EPERM` line. `check`
-now exits non-zero on failure, so the row reports the verdict (as
-`FAIL exit status 1`) on runtimes where the mount is denied.
+### Three verdict bugs, fixed, with their artefacts
+
+The captures under `real/` predate these fixes and are kept as they were taken.
+
+1. `mount(MS_SLAVE,/) in clone(NEWNS)` reported the child's **exit code**, and the
+   child exited 0 regardless of the mount verdict — the row said `OK` directly
+   above the grandchild's `FAIL errno=1 EPERM` line. `check` now exits non-zero on
+   failure, so the row reports `FAIL exit status 1` where the mount is denied.
+   `real/probe-census.txt` still shows the pre-fix `OK`.
+2. The chown probes and the compiled C probe both used `/tmp/cprobe`, so running
+   the census truncated the C probe to an empty mode-0644 file and the next
+   invocation reported `Permission denied`. That is the entire content of
+   `real/cprobe.txt`, which therefore **establishes nothing**. The chown target is
+   now `/tmp/chown-probe-target`.
+3. `write into uid-1000-owned dir` needs a fixture only a process that can `chown`
+   can build; when it was absent the probe reported the resulting `ENOENT` as
+   though it were a denial. It now reports `SKIP` with the reason.
+
+One capture is mislabelled rather than wrong: `real/lookpath.txt`'s first block is
+headed "chroot into an image rootfs" but the target had no docker, so the rootfs was
+empty and the block duplicates the second. The §5.5 result comes from the model run
+in `results/lookpath.txt`, where the two blocks differ as intended.
 
 ## Extended corpus evidence (`real/ext*.txt`, second target session 2026-09-07)
 

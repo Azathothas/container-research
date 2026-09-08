@@ -1447,7 +1447,8 @@ advisory rather than a guarantee.
 - `PT_INTERP` present → dynamically linked; interposition *may* reach it.
 - `PT_INTERP` absent → static; interposition cannot reach it.
 - Go build markers present → treat as unreachable regardless of linkage, with or
-  without cgo (§9.3).
+  without cgo (§9.3). Note that this is a property of the *payload*, not of the
+  interposer: no interposer in any language sees it.
 - Any other program may still issue raw syscalls. There is no ELF property that
   proves interposition coverage.
 
@@ -1455,6 +1456,14 @@ Where classification says "unreachable", the runtime must decline the mode with 
 named reason rather than starting and failing later, deeper, and less legibly.
 `ptrace`-based interception (the PRoot approach) is a separate tier that requires a
 usable `ptrace`, which this runtime denies.
+
+**Interposition is two jobs, and calling them one is the mistake §9.3 measures.**
+Path virtualization — rewriting the pathnames a payload passes — and ownership
+virtualization — making `chown` succeed and reporting the intended owner back — are
+independent, and a library can have the first and not the second. Only the second
+clears §9.1, which is the wall that stops the most tools. A runtime that reports
+"interpose" without saying which of the two it has is making the same category error
+as one that reports "container".
 
 ### 10.4 Image extraction
 
@@ -1499,11 +1508,28 @@ inodes before extracting, and name the destination in the error if it fails.
 ```
 
 Step 2 matters because a chroot cuts off every path outside the new root; a
-descriptor opened before the change keeps working. This is what makes a PTY possible
-at all in `chroot` mode: allocate the pair outside, pass the descriptors in, and set
-the controlling terminal in the child. It also avoids the `open /dev/null` failure of
-§5.5 for any `exec.Cmd` with nil streams. It does not help a payload that reopens
-`/dev/pts/N` by name — that case needs a populated `/dev` or is unsupported.
+descriptor opened before the change keeps working. It avoids the `open /dev/null`
+failure of §5.5 for any child with nil streams, and it is the only route by which a
+PTY could reach a chrooted payload at all: allocate the pair outside, pass the
+descriptors in, and set the controlling terminal in the child.
+
+**Whether that route is open on this runtime is unresolved, and the disagreement is
+worth recording rather than settling by assertion.** Allocating a pty pair means
+opening `/dev/ptmx` in the *outer* environment, before the root change. The target's
+mount table shows exactly six device nodes bind-mounted into `/dev` — `full`,
+`null`, `random`, `tty`, `urandom`, `zero` — with no `ptmx` and no `devpts` **[T]**
+(`verification/real/mountinfo.txt`), and `mknod` cannot create one (§3.3). Against
+that, an earlier account of the same runtime asserts that the host `/dev/ptmx`
+works, and published no capture of it **[R]**. A mount table does not list plain
+files, so it does not close the question either way.
+
+What follows regardless of which is true: a runtime must **probe for `/dev/ptmx` in
+the outer environment** and refuse `-t` with that reason where it is absent, rather
+than reporting a degraded PTY it cannot open. Where the outer environment does have
+it — the ordinary case off this runtime — the sequence above works, and the residual
+limit is a payload that reopens `/dev/pts/N` by name, which needs a populated `/dev`
+or is unsupported. A single `stat("/dev/ptmx")` on the target would settle it, and
+nobody has run one.
 
 Step 4 matters because it is where the reported `exec` failure lives (§5.5). Resolve
 the program in the process that has already changed root, never in the parent, and
