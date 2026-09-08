@@ -14,6 +14,11 @@ provides.
 | [`verification/real/`](verification/real/) | Captures from the target runtime itself (2026-09-07) — one session, not repeatable. Everything here is **[T]**. |
 | [`patches/`](patches/) | `lilipod-restricted-v2.diff` — a prior Go adaptation. Read for its lessons; `TOOL.md` §3 says why it is not the seed. |
 | [`references/`](references/) | The earlier manuscripts this work reconciles, unmodified. |
+| [`docs/`](docs/) | The methodology this repository is worked under, copied verbatim from [`Azathothas/TEMPLATE`](https://github.com/Azathothas/TEMPLATE). **Binding, not advisory** — start at [`docs/README.md`](docs/README.md). |
+
+**Licence: [0BSD](LICENSE).** Everything here — the paper, the harness, the
+reconstruction, the specification — is free for any use, with no attribution
+clause and no notice to retain.
 
 The runtime is modelled as three mechanisms that can be switched on independently — a
 user namespace with a partial ID map, a seccomp filter, and a path-scoped LSM — so

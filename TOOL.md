@@ -28,6 +28,57 @@ Before the recommendation, not after it.
 
 ---
 
+## 0.5 How this project is worked on — binding
+
+⛔ **`docs/` is not advisory.** It is copied verbatim from
+[`Azathothas/TEMPLATE`](https://github.com/Azathothas/TEMPLATE) and every file
+in it binds the sessions that work on this project. `docs/README.md` says which
+file binds which kind of task. Read the four it names before you write anything.
+
+The four rules that will be checked against your work, stated here so you cannot
+say you did not see them:
+
+1. **`docs/methodology/references.md`** — before you build anything on a
+   reference, you have **read** it: three passes, each asking a different
+   question; its **tracker**, not only its code; and you have recorded a commit,
+   a depth reached, and exactly one verdict. ⭐ *Adopt mechanisms, cited at file
+   and line. Never architectures.*
+2. **`docs/methodology/experiments.md`** — every number ships with the script
+   that took it, in the tree, with pinned inputs and printed conditions.
+   ⛔ **A negative result is a result and gets committed.** Measure from outside
+   the thing you are measuring. Give each instrument an expectation and a
+   non-zero exit, so it becomes a gate rather than a document.
+3. **`docs/methodology/vendoring.md`** — **fix it here, now, in this tree.**
+   ⛔ Never open an issue, PR, discussion, comment or fork on anybody else's
+   repository, under any framing. ⛔ Never write a characterisation of an
+   upstream project or its maintainers. Every patch carries the command that
+   reproduces the defect it fixes.
+4. **`docs/methodology/work-todo.md`** — the work model. Entries in
+   `TODO/<category>.md`, one row each in `TODO/INDEX.md`, the work order in
+   `TODO/PROGRESS.md` **and nowhere else**, the rules in `TODO/RULES.md`. An
+   entry closes **in place** with its acceptance command actually run and the
+   output recorded. ⛔ **Nothing closes as "won't fix", "upstream's problem" or
+   "out of scope".** A blocked entry stays open with the blocker named.
+   [`Azathothas/bit-cli`](https://github.com/Azathothas/bit-cli) is a working
+   adopter — read its `TODO/INDEX.md`, `TODO/RULES.md` and `TODO/PROGRESS.md`
+   for the shape, and its `TODO/reference-map.md` for how a corpus is recorded.
+
+⭐ **The counts are checked by a script, never by hand.** `work-todo.md` names
+the two you need: a writer that re-derives every count from the rows, and a
+reader that asserts the counts agree, that no status disagrees between index and
+entry, that every reference resolves, and that every cited path and line exists.
+The reader runs as a gate.
+
+### Licence
+
+**0BSD**, for this repository and for `podbox`. Genuinely free: no attribution
+clause, no notice retention, no share-alike. Everything vendored must be
+licence-compatible with redistribution under 0BSD, and the determination —
+per tree, with where it came from — belongs in `TODO/reference-map.md` before
+the tree is used, not after.
+
+---
+
 ## 1. Route by budget
 
 | You have | Read |
@@ -61,6 +112,30 @@ common: AI-agent sandboxes, hardened CI executors, locked-down HPC nodes.
 There is **no `/etc/passwd`**, no `/run`, no `/var`, no `/dev/fuse`, no `/dev/ptmx`,
 no `/sys`. `docker` on PATH is a podman alias with no daemon. Plain-HTTP (tcp/80)
 egress is broken; HTTPS works.
+
+### 2.0 What podbox has to be, and what it must not be
+
+⭐ **The target above is a floor, not a specification.** `podbox` must work in an
+environment **more restricted than this one**, and degrade honestly rather than
+break when it meets one. Concretely, every one of these must be a probe result
+and never an assumption: the write allowlist, the filter's contents, whether
+`clone` with namespace flags is permitted at all, whether `chroot` is permitted,
+whether `/dev/ptmx` exists, whether `seccomp` can be stacked, how much space and
+how many inodes the writable paths have. A runtime that hard-codes any of them
+has hard-coded one machine.
+
+⛔ **This is not a demo and not a toy.** Thousands of agents run on variations of
+this runtime, and they reach for `docker` because it is the only container
+language they know. `podbox` is the replacement that **just works** for them: it
+answers to `docker` and `podman` on PATH, takes the same verbs, flags and exit
+codes, and where it cannot honour something it says so in one line instead of
+failing in the fourth layer down. A tool that needs its user to learn its
+differences has not replaced anything.
+
+⛔ **It also must not lie.** Everything in §4.1 and §6.8 about reporting the
+achieved mode is load-bearing precisely *because* the audience is automated:
+an agent cannot notice that its "container" was a `chroot` the way a human
+skimming a log might. The honesty rules are the product, not a disclaimer.
 
 ### 2.1 Three mechanisms, not one
 
@@ -164,10 +239,7 @@ benchmark; sizes are orders of magnitude.
 - **`unsafe` is unavoidable.** Roughly every syscall in §6.1 is a raw one. Confine it
   to one module per subsystem, with the safe wrapper adjacent.
 
-### 3.4 Toolchain and crates
-
-Versions are what the index carried on 2026-09-08; pin exact versions in
-`Cargo.toml` and update deliberately.
+### 3.4 Toolchain
 
 ```toml
 # rust-toolchain.toml: stable, target x86_64-unknown-linux-musl
@@ -177,27 +249,74 @@ Versions are what the index carried on 2026-09-08; pin exact versions in
 lto = true; opt-level = "z"; codegen-units = 1; strip = "symbols"; panic = "abort"
 ```
 
-| need | crate | version | note |
-|---|---|---|---|
-| syscalls | `rustix` | 1.1.4 | prefer over `libc` where it covers the call; `linux_raw` backend needs no libc |
-| syscalls not in `rustix` | `libc` | 0.2.x | `fsopen`, `fsmount`, `move_mount`, `open_tree`, `seccomp` ioctls may need hand declarations |
-| process/fd plumbing | `nix` | 0.31.3 | pidfd, waitid, signalfd |
-| seccomp BPF | `seccompiler` | 0.5.0 | pure Rust, no libseccomp C dependency — keeps the static build clean |
-| Landlock | `landlock` | 0.4.7 | for podbox's own optional confinement, and to probe M |
-| OCI registry | `oci-client` | 0.17.0 | pure-Rust registry client |
-| OCI types | `oci-spec` | 0.10.0 | manifests, image config |
-| TLS | `rustls` + `webpki-roots` | 0.23.44 / 1.0.9 | no OpenSSL, no C, statically linkable |
-| HTTP | `ureq` | 3.4.1 | blocking; podbox has no reason to be async |
-| tar | `tar` | 0.4.46 | but see §6.3 — you will drive it at entry level, not `unpack()` |
-| gzip | `flate2` | 1.1.10 | use the `rust_backend` feature; no zlib C |
-| zstd | `ruzstd` | 0.9.0 | pure Rust. `zstd` 0.14 is faster and pulls C — measure before choosing |
-| digests | `sha2` | 0.11.0 | |
-| JSON | `serde_json` | 1.0.151 | the ownership sidecar and the store |
-| CLI | `clap` | 4.6.6 | `derive`, with the parity table of §6.8 |
-| ELF inspection | `goblin` | 0.10.7 | payload classification (§6.7) |
-| memfd launch | `memfd-exec` | 0.2.1 | or the ~40 lines it wraps; see §7 |
+### 3.5 Dependency posture — restrictive, and this is a hard constraint
 
----
+⛔ **Every dependency is a decision that has to be argued, and the default answer
+is no.** The artefact gets packed into a single file, is a candidate for the
+memfd launch rung, and ships to machines with a 64 MiB `/tmp`. Binary size is a
+functional requirement here, not an aesthetic one.
+
+⛔ **Do not take the list below as a decision.** An earlier revision of this file
+printed a table of fifteen crates with pinned versions, which read as a
+shopping list and was wrong twice over: several of those crates are large, and
+two of them are **forks that exist because the original is unmaintained** — a
+fact that changes what you should do with them entirely. What follows is the
+*policy*. The candidate names are starting points for a sweep, and each one is
+an entry in `TODO/` that closes with a measurement, not a `cargo add`.
+
+**Before any dependency lands, its entry answers all five:**
+
+| | |
+|---|---|
+| 1 | What does it do that we would otherwise write, and roughly how much code is that? |
+| 2 | What does it cost — measured `cargo bloat`/`cargo tree` figures against the same build without it, not an estimate |
+| 3 | Does it pull C? A C dependency breaks `crt-static` cleanliness or drags a toolchain; prefer the pure-Rust path and **measure** the performance claim before choosing the C one |
+| 4 | Is it maintained, and is its licence compatible with redistribution under **0BSD**? Determined per `docs/methodology/references.md` step 3 — **read the tracker** — and recorded in `TODO/reference-map.md` |
+| 5 | Vendor or registry? Per the rule below |
+
+#### The vendor / registry split
+
+`docs/methodology/vendoring.md` is binding here. The split is not about size, it
+is about **whether we will end up patching it**:
+
+| | what | why |
+|---|---|---|
+| **Vendor and patch, in-tree** | anything niche, small, unmaintained, or that sits on a seam we will need to move: `memfd-exec`, `userland-execve`, the interposer's building blocks, anything ELF- or syscall-shaped, anything forked | We *will* need behaviour its published interface does not expose. Under `vendoring.md` the answer is to **fix it here, now**, so it has to live here. |
+| **Registry dependency, pinned** | large, generic, well-maintained infrastructure with no seam we need to move: TLS, hashing, JSON, argument parsing, compression | Vendoring these buys nothing and costs a cold compile plus every one of their lints becoming ours. |
+| **Write it ourselves** | anything where the dependency is bigger than the code it replaces | The default when 1 and 2 above do not clearly favour the crate. |
+
+⭐ **The VHSgunzo trees are the worked example, and the reason matters.**
+`memfd-exec` and `userland-execve` reach us as *forks*, maintained because the
+originals are not. That is exactly the case `vendoring.md` is written for: a
+registry dependency on an unmaintained crate is a blocker waiting to happen, and
+"blocked on upstream" is not an outcome this methodology has a place for. So
+they are **vendored, patched here, and carried with the reproduction command
+that proves each patch is still needed**. Not depended on. Not filed upstream.
+⛔ Nothing is opened on anybody's repository, and nothing in this tree
+characterises anybody's project or its maintainers — write the technical fact
+and stop.
+
+#### Candidate areas, to be swept — not chosen
+
+Each of these is a `TODO/` entry for the sweep session, closing with the five
+answers above and a measured size delta. Names are where to start looking, not
+what to use.
+
+| area | starting points | note going in |
+|---|---|---|
+| syscalls | `rustix` (`linux_raw` backend), or hand-declared | The new mount API, the seccomp ioctls and Landlock are likely hand-declared either way. Measure how much a crate is actually saving. |
+| seccomp BPF | `seccompiler`, or emit the BPF ourselves | The filters podbox installs are short. `verification/confine/main.go` emits one by hand in ~60 lines; that is the size of the thing a crate would replace. |
+| Landlock | the `landlock` crate, or hand-declared | Three syscalls. `verification/confine/landlock.go` is the whole thing in one file. |
+| OCI registry + types | `oci-client`, `oci-spec` | The heaviest candidate in the list by far. Weigh against a minimal client for the endpoints actually used. |
+| TLS | `rustls` + `webpki-roots` | Non-negotiable that it is pure Rust; the alternative pulls OpenSSL and breaks the static story. |
+| HTTP | `ureq` | Blocking. podbox has no reason to be async, and an async runtime is a large dependency with nothing to do here. |
+| tar, gzip, zstd | `tar`, `flate2` (`rust_backend`), `ruzstd` | Driven at entry level, never `unpack()` — §6.3. |
+| digests, JSON, CLI, ELF | `sha2`, `serde_json`, `clap`, `goblin` | `clap` is large for what podbox needs from it; a hand-rolled parser against the §6.8 table is a real option and it must be measured, not assumed. |
+| memfd launch, userland exec | **vendor** the VHSgunzo trees | Per the split above. |
+
+⛔ **`cargo bloat` output for the release binary is a committed artefact**, per
+`docs/methodology/experiments.md`, and it is checked at the gate. A dependency
+that lands without a before-and-after number has not landed.
 
 ## 4. Architecture
 
@@ -781,7 +900,74 @@ Say so in the banner rather than approximating:
 
 ---
 
-## 11. Orientation in this repository
+## 11. Operating rules for the session doing this work
+
+⚠ Not about `podbox`. About **you**, working on it. Each of these was paid for.
+
+### 11.1 The environment you are working in
+
+| | |
+|---|---|
+| **`main` only** | ⛔ Work on `main`. Never a `claude/*` or other agent-named branch, unless a human instructs otherwise in that session. Commit and push to `main`. |
+| **Docker is installed but not running** | Start it yourself: `dockerd &`, then wait for `docker info` to answer. It is not broken; nobody started it. |
+| **`docker` on PATH may be a podman alias with no daemon** | Check what you actually have before concluding anything about container support. |
+| **GitHub reads go through a proxy** | `https://api.gh.pkgforge.dev/<GH_API_PATH>` for every read-only GitHub API path. GraphQL and authenticated routes are the exception and use the normal client. |
+| **Other fetches go through a proxy when the direct route refuses** | `https://api.rv.pkgforge.dev/<ORIGINAL_URL>`. Use the direct URL first; fall back when it 401s or 403s. `raw.githubusercontent.com` generally works directly; `github.com/.../raw/...` generally does not. |
+| **Outbound HTTPS is TLS-intercepted** | A `curl` **inside a docker build** cannot verify a chain the host trusts. Do not fetch in a `RUN`; copy from a pinned image stage instead. `experiments/Dockerfile.target` is the worked example. ⛔ Never disable TLS verification and never unset the proxy. |
+| **tcp/80 is broken in the studied runtime** | Which is why every distro fixup in §6.4 is a protocol fixup. |
+
+### 11.2 Discipline
+
+Beyond `docs/`, and enforced in review:
+
+- ⛔ **No narrative.** Not in a document, not in a commit message, not in an
+  entry. `docs/conventions/prose.md` is binding: no defensive framing, no
+  "as we discovered", no session diary. State the technical fact.
+- ⛔ **No fabricated number.** A dash where the value is unknown. An estimate is
+  labelled as one, in the same sentence, every time it appears.
+- ⭐ **Three deep review passes, each asking a different question**, before any
+  document or milestone is called done: (1) is each claim *true*, checked against
+  source or a run; (2) is it *internally consistent* — do the cross-references
+  resolve, do two sections disagree; (3) is it *usable cold* by somebody with no
+  memory of this work. A single pass repeated three times is one pass.
+- ⭐ **Verify, do not accept.** A claim from a previous session, another agent,
+  an issue, or the operator describes a tree that may have moved. Open the file
+  at the captured commit and check. ⭐ **A disagreement between the claim and the
+  code is the finding**, and it is worth more than either source.
+- ⛔ **A test that has never run green does not count**, and neither does a
+  milestone built on one.
+- ⭐ **Write in place.** Amend the document; never append a "correction" section
+  or a changelog paragraph to the end of a page. History belongs in the git log
+  and in `docs/methodology/history.md`'s directory, not in the page that answers
+  a question.
+
+### 11.3 Resource and liveness guards — the session must not kill itself
+
+⚠ Long autonomous runs die in three ways, all avoidable, and all of them have
+happened:
+
+1. **Out of disk, mid-write.** Writable space is a fixed allowance, so `df`
+   misleads: "Avail 0" with low "Used" means the allowance is spent. ⭐ **Check
+   before every large operation** — image pulls, extractions, `cargo build`,
+   `docker build` — with `statvfs`/`df` for **both blocks and inodes**, and name
+   the destination in the error. When it happens, delete build artefacts, caches
+   and stale clones; deletes still succeed while writes fail.
+2. **A hung process.** ⛔ **Every command that touches the network, a registry,
+   a container or another process gets a `timeout`.** A background job gets a
+   deadline and a check. Never wait on something with no upper bound.
+3. **A command that wants input.** ⛔ **Never run an interactive command.**
+   `-y`, `--noconfirm`, `--yes`, `--non-interactive`, `DEBIAN_FRONTEND=noninteractive`,
+   `GIT_TERMINAL_PROMPT=0`, `</dev/null`. A prompt with no terminal behind it is
+   a hang, and a hang costs the whole session.
+
+⭐ **`podbox` inherits all three as requirements**, not just the session:
+§6.2's `statvfs` check, §6.6's bounded waits, and a CLI that never prompts.
+A container runtime that hangs waiting for input is unusable by the audience it
+is built for.
+
+---
+
+## 12. Orientation in this repository
 
 | path | what it is |
 |---|---|
@@ -791,6 +977,8 @@ Say so in the banner rather than approximating:
 | `experiments/` | the reconstruction and the measurements: build the runtime in a container, assert every attribution row, compare languages, run the interpose tier |
 | `patches/lilipod-restricted-v2.diff` | the prior Go implementation. Read for its lessons; do not apply it |
 | `references/` | the three earlier manuscripts this corpus reconciled, unmodified |
+| `docs/` | ⛔ the binding methodology, copied verbatim from `Azathothas/TEMPLATE`. Start at `docs/README.md` |
+| `LICENSE` | 0BSD. This corpus and everything derived from it |
 
 ```sh
 ./experiments/10-build-target-image.sh   # the runtime's userspace
