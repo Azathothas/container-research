@@ -3,10 +3,17 @@
 # its mount topology, its partial ID map, its seccomp filter and its write
 # policy — and which parts does this host refuse?
 #
-#   ./20-enter-target.sh                interactive shell inside the reconstruction
-#   ./20-enter-target.sh -- id          run one command inside it
-#   ./20-enter-target.sh --raw -- sh    the container without the confinement,
-#                                       for setting fixtures up
+#   ./20-enter-target.sh                     interactive shell inside the reconstruction
+#   ./20-enter-target.sh -- id               run one command inside it
+#   ./20-enter-target.sh --stage ./podbox \
+#       -- /workspace/podbox probe           stage your own binary and run it
+#   ./20-enter-target.sh --raw -- sh         the container without the confinement,
+#                                            for setting fixtures up
+#
+# --stage copies a file or directory into what becomes /workspace, which is one
+# of the four writable paths inside. Repeatable. This is how you run something
+# that is not part of this repository against the reconstructed runtime — which
+# is the point of the script for anyone implementing against it.
 #
 # Exit: 0 the payload ran, its own code otherwise, 2 could not run.
 set -euo pipefail
@@ -17,10 +24,12 @@ IMAGE="${TARGET_IMAGE:-container-research/target:1}"
 STAGE="${TARGET_STAGE:-$REPO/experiments/.stage}"
 
 RAW=0
+STAGE_IN=()
 ARGS=()
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--raw) RAW=1; shift ;;
+	--stage) STAGE_IN+=("${2:?--stage needs a path}"); shift 2 ;;
 	--) shift; ARGS=("$@"); break ;;
 	*) ARGS+=("$1"); shift ;;
 	esac
@@ -79,6 +88,12 @@ fi
 exec "$H/confine" "$@"
 ENTER
 chmod 0755 "$STAGE/.harness/enter.sh"
+
+# Anything the caller asked to bring along. It lands at /workspace/<basename>.
+for p in ${STAGE_IN+"${STAGE_IN[@]}"}; do
+	[ -e "$p" ] || { echo "SKIP: --stage $p does not exist" >&2; exit 2; }
+	cp -a -- "$p" "$STAGE/$(basename -- "$p")"
+done
 
 # The uid-1000-owned-directory fixture: the census cannot build it itself,
 # because chown to an unmapped id is exactly what the runtime denies.

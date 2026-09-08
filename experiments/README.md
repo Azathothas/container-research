@@ -29,7 +29,25 @@ Uniform across all three, per this repository's convention:
 ./experiments/20-enter-target.sh                # interactive shell in the reconstruction
 ./experiments/20-enter-target.sh -- id          # or run one command
 ./experiments/30-attribution-census.sh          # the census, with assertions
+./experiments/40-language-selection.sh          # the language comparison
+./experiments/50-interpose-tier.sh              # pathmap against the four walls
 ```
+
+## Running your own binary against it
+
+This is the point of `20-` for anyone implementing against this runtime rather
+than reading about it. `--stage` copies a file or directory into what becomes
+`/workspace` — one of the four writable paths inside — and is repeatable:
+
+```sh
+./experiments/20-enter-target.sh --stage ./target/release/podbox \
+    -- /workspace/podbox probe
+```
+
+Your binary then runs as uid 0 in a user namespace mapping `0 -> 1000`, under
+the filter, in the target's mount topology, with no `/etc/passwd`, no `/run`,
+no `/var`, a 64 MiB `/tmp` and six device nodes. `--raw` gives you the same
+container *without* the confinement, which is where you set fixtures up.
 
 `20-` needs a **privileged** container: reconstructing a mount topology
 requires `mount(2)`, and reconstructing a partial ID map requires writing

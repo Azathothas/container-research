@@ -800,6 +800,19 @@ Say so in the banner rather than approximating:
 ./experiments/50-interpose-tier.sh       # the measurements behind §6.7
 ```
 
+⭐ **This is how you test podbox without the target.** `--stage` copies a file
+or directory into what becomes `/workspace`, so your build runs inside the
+reconstruction:
+
+```sh
+./experiments/20-enter-target.sh --stage ./target/release/podbox \
+    -- /workspace/podbox probe
+```
+
+It will run as uid 0 in a user namespace mapping `0 -> 1000`, under the filter,
+in the target's mount topology, with no `/etc/passwd`, a 64 MiB `/tmp` and six
+device nodes. Every milestone test in §5 is written to be run this way.
+
 Exit codes are uniform across all five: **0** ran and matched, **1** ran and
 something failed, **2** could not run. A `2` from `30-` is expected on a kernel
 without Landlock and is not a failure; a `1` is.
